@@ -124,17 +124,18 @@ jobs:
         run: |
           cd openwrt-sdk
           make package/luci-app-esurfingclient/compile V=sc -j$(nproc)
-          mapfile -t PKG_FILES < <(find bin/packages -type f -name "luci-app-esurfingclient*.apk")
-          if [ "${#PKG_FILES[@]}" -eq 0 ]; then
+          PKG_COUNT=$(find bin/packages -type f -name "luci-app-esurfingclient*.apk" | wc -l)
+          if [ "$PKG_COUNT" -eq 0 ]; then
             echo "❌ 未找到 luci-app-esurfingclient APK 构建产物"
             exit 1
           fi
-          if [ "${#PKG_FILES[@]}" -gt 1 ]; then
+          if [ "$PKG_COUNT" -gt 1 ]; then
             echo "❌ 找到多个 luci-app-esurfingclient APK 构建产物，拒绝覆盖："
-            printf '%s\n' "${PKG_FILES[@]}"
+            find bin/packages -type f -name "luci-app-esurfingclient*.apk"
             exit 1
           fi
-          cp "${PKG_FILES[0]}" ../luci-app-esurfingclient_${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}_all.apk
+          PKG_FILE=$(find bin/packages -type f -name "luci-app-esurfingclient*.apk")
+          cp "$PKG_FILE" ../luci-app-esurfingclient_${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}_all.apk
 
       - name: 上传工件
         uses: actions/upload-artifact@v7

@@ -157,17 +157,18 @@ jobs:
 
           make package/esurfingclient/compile -j$(nproc)
           
-          mapfile -t PKG_FILES < <(find bin/packages -type f -name "esurfingclient*.ipk")
-          if [ "${#PKG_FILES[@]}" -eq 0 ]; then
+          PKG_COUNT=$(find bin/packages -type f -name "esurfingclient*.ipk" | wc -l)
+          if [ "$PKG_COUNT" -eq 0 ]; then
             echo "❌ 未找到 esurfingclient IPK 构建产物"
             exit 1
           fi
-          if [ "${#PKG_FILES[@]}" -gt 1 ]; then
+          if [ "$PKG_COUNT" -gt 1 ]; then
             echo "❌ 找到多个 esurfingclient IPK 构建产物，拒绝覆盖："
-            printf '%s\n' "${PKG_FILES[@]}"
+            find bin/packages -type f -name "esurfingclient*.ipk"
             exit 1
           fi
-          cp "${PKG_FILES[0]}" ../esurfingclient_${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}_x86_64.ipk
+          PKG_FILE=$(find bin/packages -type f -name "esurfingclient*.ipk")
+          cp "$PKG_FILE" ../esurfingclient_${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}_x86_64.ipk
 
       - name: 上传工件
         uses: actions/upload-artifact@v7
