@@ -6,6 +6,19 @@ permissions:
 
 on:
   workflow_dispatch:
+    inputs:
+      full_version:
+        required: true
+        type: string
+      openssl_version:
+        required: true
+        type: string
+      curl_version:
+        required: true
+        type: string
+      tail_wind_labs_version:
+        required: true
+        type: string
   workflow_call:
     inputs:
       full_version:

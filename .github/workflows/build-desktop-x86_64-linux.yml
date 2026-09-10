@@ -6,6 +6,19 @@ permissions:
 
 on:
   workflow_dispatch:
+    inputs:
+      full_version:
+        required: true
+        type: string
+      openssl_version:
+        required: true
+        type: string
+      curl_version:
+        required: true
+        type: string
+      tail_wind_labs_version:
+        required: true
+        type: string
   workflow_call:
     inputs:
       full_version:
@@ -34,15 +47,22 @@ jobs:
         run: |
           PACKAGES="build-essential cmake wget gcc g++ make upx-ucl binutils file"
 
+          SUCCESS=0
           for i in 1 2 3; do
             echo "尝试 $i: 正在安装 $PACKAGES"
             if apt-get update && apt-get install -y $PACKAGES; then
               echo "✅ 所有软件包已完成安装"
+              SUCCESS=1
               break
             fi
             echo "❌ 尝试 $i 失败"
             sleep 3
           done
+
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo "❌ 安装失败：已重试 3 次"
+            exit 1
+          fi
 
       - name: 获取 OpenSSL 缓存
         id: cache-openssl

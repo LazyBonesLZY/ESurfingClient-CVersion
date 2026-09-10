@@ -6,19 +6,26 @@ permissions:
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: '包版本，留空则从 CMakeLists.txt 读取'
+        required: false
+        type: string
+      release:
+        description: '包 release，留空则从 CMakeLists.txt 读取'
+        required: false
+        type: string
   workflow_call:
     inputs:
       version:
-        required: true
+        required: false
         type: string
       release:
-        required: true
-        type: string
-      sdk_version:
-        required: true
+        required: false
         type: string
 
 env:
+  DEFAULT_SDK_VERSION: "25.12.0"
   SDK_URL: "https://downloads.openwrt.org/releases/25.12.0/targets/x86/64"
   SDK_NAME: "openwrt-sdk-25.12.0-x86-64_gcc-14.3.0_musl.Linux-x86_64"
 
@@ -31,24 +38,56 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: 解析版本号
+        id: ver
+        run: |
+          set -eu
+          VERSION="${{ inputs.version }}"
+          RELEASE="${{ inputs.release }}"
+          if [ -z "${VERSION}" ] || [ -z "${RELEASE}" ]; then
+            CMAKE=esurfingclient/main/CMakeLists.txt
+            MAJOR=$(sed -n 's/.*set(PROGRAM_VERSION_MAJOR \([0-9][0-9]*\)).*/\1/p' "$CMAKE")
+            MINOR=$(sed -n 's/.*set(PROGRAM_VERSION_MINOR \([0-9][0-9]*\)).*/\1/p' "$CMAKE")
+            PATCH=$(sed -n 's/.*set(PROGRAM_VERSION_PATCH \([0-9][0-9]*\)).*/\1/p' "$CMAKE")
+            CMAKE_RELEASE=$(sed -n 's/.*set(PROGRAM_VERSION_RELEASE \([0-9][0-9]*\)).*/\1/p' "$CMAKE")
+            VERSION="${VERSION:-${MAJOR}.${MINOR}.${PATCH}}"
+            RELEASE="${RELEASE:-${CMAKE_RELEASE}}"
+          fi
+          SDK_VERSION="${DEFAULT_SDK_VERSION:-}"
+          if [ -z "${VERSION}" ] || [ -z "${RELEASE}" ]; then
+            echo "无法解析版本号 VERSION=${VERSION} RELEASE=${RELEASE}"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
+          echo "sdk_version=${SDK_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=${VERSION} release=${RELEASE} sdk_version=${SDK_VERSION:-<empty>}"
+
       - name: 更新 Makefile 版本号
         run: |
-          sed -i "s/PKG_VERSION:=.*/PKG_VERSION:=${{ inputs.version }}/" luci-app-esurfingclient/Makefile
-          sed -i "s/PKG_RELEASE:=.*/PKG_RELEASE:=${{ inputs.release }}/" luci-app-esurfingclient/Makefile
+          sed -i "s/PKG_VERSION:=.*/PKG_VERSION:=${{ steps.ver.outputs.version }}/" luci-app-esurfingclient/Makefile
+          sed -i "s/PKG_RELEASE:=.*/PKG_RELEASE:=${{ steps.ver.outputs.release }}/" luci-app-esurfingclient/Makefile
 
       - name: 安装软件包 (最多重试 3 次)
         run: |
           PACKAGES="build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev rsync wget ca-certificates unzip file zstd python3-setuptools swig"
 
+          SUCCESS=0
           for i in 1 2 3; do
             echo "尝试 $i: 正在安装 $PACKAGES"
             if apt-get update && apt-get install -y $PACKAGES; then
               echo "✅ 所有软件包已完成安装"
+              SUCCESS=1
               break
             fi
             echo "❌ 尝试 $i 失败"
             sleep 3
           done
+
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo "❌ 安装失败：已重试 3 次"
+            exit 1
+          fi
 
       - name: 获取 OpenWrt SDK 压缩包缓存
         id: cache-openwrt-sdk
@@ -56,7 +95,7 @@ jobs:
         with:
           path: |
             ${{ env.SDK_NAME }}.tar.zst
-          key: openwrt-x86_64-apk-sdk-${{ inputs.sdk_version }}
+          key: openwrt-x86_64-apk-sdk-${{ steps.ver.outputs.sdk_version }}
 
       - name: 下载 SDK
         if: steps.cache-openwrt-sdk.outputs.cache-hit != 'true'
@@ -72,6 +111,7 @@ jobs:
         run: |
           cd openwrt-sdk
           scripts/feeds update packages
+          scripts/feeds update luci
           scripts/feeds install luci-base
           make defconfig
 
@@ -79,17 +119,26 @@ jobs:
         run: |
           cp -r luci-app-esurfingclient openwrt-sdk/package/
           cd openwrt-sdk
-          scripts/feeds install luci-app-esurfingclient
 
       - name: 编译 luci-app-esurfingclient
         run: |
           cd openwrt-sdk
           make package/luci-app-esurfingclient/compile V=sc -j$(nproc)
-          find bin/packages -name "luci-app-esurfingclient*.apk" -exec cp {} ../luci-app-esurfingclient_${{ inputs.version }}-${{ inputs.release }}_all.apk \;
+          mapfile -t PKG_FILES < <(find bin/packages -type f -name "luci-app-esurfingclient*.apk")
+          if [ "${#PKG_FILES[@]}" -eq 0 ]; then
+            echo "❌ 未找到 luci-app-esurfingclient APK 构建产物"
+            exit 1
+          fi
+          if [ "${#PKG_FILES[@]}" -gt 1 ]; then
+            echo "❌ 找到多个 luci-app-esurfingclient APK 构建产物，拒绝覆盖："
+            printf '%s\n' "${PKG_FILES[@]}"
+            exit 1
+          fi
+          cp "${PKG_FILES[0]}" ../luci-app-esurfingclient_${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}_all.apk
 
       - name: 上传工件
         uses: actions/upload-artifact@v7
         with:
-          name: luci-app-esurfingclient_${{ inputs.version }}-${{ inputs.release }}_all-apk
-          path: luci-app-esurfingclient_${{ inputs.version }}-${{ inputs.release }}_all.apk
+          name: luci-app-esurfingclient_${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}_all-apk
+          path: luci-app-esurfingclient_${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}_all.apk
           retention-days: 30

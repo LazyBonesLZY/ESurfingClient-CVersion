@@ -121,7 +121,6 @@ jobs:
     with:
       version: ${{ needs.get-version.outputs.version }}
       release: ${{ needs.get-version.outputs.release }}
-      sdk_version: ${{ needs.get-version.outputs.openwrt_ipk_sdk_version }}
 
   openwrt-luci-apk:
     if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'openwrt-luci-apk'
@@ -131,7 +130,6 @@ jobs:
     with:
       version: ${{ needs.get-version.outputs.version }}
       release: ${{ needs.get-version.outputs.release }}
-      sdk_version: ${{ needs.get-version.outputs.openwrt_apk_sdk_version }}
 
   openwrt-x86_64-ipk:
     if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'openwrt-x86_64-ipk'
@@ -141,7 +139,6 @@ jobs:
     with:
       version: ${{ needs.get-version.outputs.version }}
       release: ${{ needs.get-version.outputs.release }}
-      sdk_version: ${{ needs.get-version.outputs.openwrt_ipk_sdk_version }}
 
   openwrt-x86_64-apk:
     if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'openwrt-x86_64-apk'
@@ -151,7 +148,6 @@ jobs:
     with:
       version: ${{ needs.get-version.outputs.version }}
       release: ${{ needs.get-version.outputs.release }}
-      sdk_version: ${{ needs.get-version.outputs.openwrt_apk_sdk_version }}
 
   openwrt-arm64-ipk:
     if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'openwrt-arm64-ipk'
@@ -161,7 +157,6 @@ jobs:
     with:
       version: ${{ needs.get-version.outputs.version }}
       release: ${{ needs.get-version.outputs.release }}
-      sdk_version: ${{ needs.get-version.outputs.openwrt_ipk_sdk_version }}
 
   openwrt-ramips_mt7621-ipk:
     if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'openwrt-ramips_mt7621-ipk'
@@ -171,7 +166,6 @@ jobs:
     with:
       version: ${{ needs.get-version.outputs.version }}
       release: ${{ needs.get-version.outputs.release }}
-      sdk_version: ${{ needs.get-version.outputs.openwrt_ipk_sdk_version }}
 
   openwrt-ramips_mt7621-apk:
     if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'openwrt-ramips_mt7621-apk'
@@ -181,7 +175,6 @@ jobs:
     with:
       version: ${{ needs.get-version.outputs.version }}
       release: ${{ needs.get-version.outputs.release }}
-      sdk_version: ${{ needs.get-version.outputs.openwrt_apk_sdk_version }}
 
   openwrt-mediatek_filogic-ipk:
     if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'openwrt-mediatek_filogic-ipk'
@@ -191,7 +184,6 @@ jobs:
     with:
       version: ${{ needs.get-version.outputs.version }}
       release: ${{ needs.get-version.outputs.release }}
-      sdk_version: ${{ needs.get-version.outputs.openwrt_ipk_sdk_version }}
 
   openwrt-mediatek_filogic-apk:
     if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'openwrt-mediatek_filogic-apk'
@@ -201,7 +193,6 @@ jobs:
     with:
       version: ${{ needs.get-version.outputs.version }}
       release: ${{ needs.get-version.outputs.release }}
-      sdk_version: ${{ needs.get-version.outputs.openwrt_apk_sdk_version }}
 
   openwrt-qualcommax_ipq60xx-ipk:
     if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'openwrt-qualcommax_ipq60xx-ipk'
@@ -211,7 +202,6 @@ jobs:
     with:
       version: ${{ needs.get-version.outputs.version }}
       release: ${{ needs.get-version.outputs.release }}
-      sdk_version: ${{ needs.get-version.outputs.openwrt_ipk_sdk_version }}
 
   openwrt-qualcommax_ipq60xx-apk:
     if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'openwrt-qualcommax_ipq60xx-apk'
@@ -221,7 +211,6 @@ jobs:
     with:
       version: ${{ needs.get-version.outputs.version }}
       release: ${{ needs.get-version.outputs.release }}
-      sdk_version: ${{ needs.get-version.outputs.openwrt_apk_sdk_version }}
 
   release:
     needs:
@@ -279,7 +268,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete master-latest -y --cleanup-tag
+          gh release delete master-latest -y --cleanup-tag || echo "release/tag 不存在，跳过清理"
 
       - name: 创建 GitHub Prerelease
         uses: softprops/action-gh-release@v3
