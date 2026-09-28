@@ -10,6 +10,10 @@ LOG_DIR_DEFAULT=/var/log/esurfing/logs
 STATE_DIR=/var/run/esurfingclient
 
 clear_demand_state() {
+  nft delete table ip esurf_demand 2>/dev/null
+  iptables -t mangle -D PREROUTING -j esurf_demand 2>/dev/null
+  iptables -t mangle -F esurf_demand 2>/dev/null
+  iptables -t mangle -X esurf_demand 2>/dev/null
   rm -rf "$STATE_DIR"
 }
 

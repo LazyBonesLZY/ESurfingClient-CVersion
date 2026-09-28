@@ -210,6 +210,8 @@ extern char g_demand_iface[DEMAND_IFACE_LEN];
 
 extern uint8_t g_account_order[ACCOUNT_ORDER_MAX];
 
+extern uint32_t g_account_mark[ACCOUNT_ORDER_MAX];
+
 extern uint8_t g_account_order_cnt;
 
 /** @brief 刷新状态函数 */

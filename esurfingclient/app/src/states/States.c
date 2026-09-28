@@ -64,4 +64,6 @@ char g_demand_iface[DEMAND_IFACE_LEN] = {0};
 
 uint8_t g_account_order[ACCOUNT_ORDER_MAX] = {0};
 
+uint32_t g_account_mark[ACCOUNT_ORDER_MAX] = {0};
+
 uint8_t g_account_order_cnt = 0;

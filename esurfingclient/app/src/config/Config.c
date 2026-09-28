@@ -164,6 +164,7 @@ bool load_cfg()
     g_demand_idle_mins = DEFAULT_DEMAND_IDLE_MINS;
     g_demand_iface[0] = '\0';
     g_account_order_cnt = 0;
+    memset(g_account_mark, 0, sizeof(g_account_mark));
     /**
      * 桌面分支直接写 g_prog_status[0], 这里保证至少有一格可用
      * (OpenWrt 分支后面会按配置数重新分配)
@@ -569,6 +570,7 @@ bool load_cfg()
         if (valid_cnt >= 0 && valid_cnt < ACCOUNT_ORDER_MAX)
         {
             g_account_order[valid_cnt] = (uint8_t)(i + 1);
+            g_account_mark[valid_cnt] = g_prog_status[valid_i].login_cfg.mark;
         }
         valid_cnt++;
         valid_i++;

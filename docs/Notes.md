@@ -64,6 +64,9 @@
 - **只在 `--role auth` 且可用账号不少于 2 个时生效**。单进程模式、桌面端、只配了一个账号, 都按原来的方式认证。
 - **看门狗会在 `dialer_app` 返回时关掉** (`DialerClient.c`)。认证进程如果还要继续 (重新认证或转入待机),
   `work_auth` 必须再 `watchdog_start()` 一次, 否则待机那几小时没有看门狗。
+- **未认证线路的转发改写不碰 OUTPUT** (`DemandDial.c` 的 nft 表 `esurf_demand`, 钩子是 `prerouting` / `mangle + 1`)。
+  认证进程的包走 OUTPUT 加 `SO_MARK`, 如果连 OUTPUT 一起改, 待机账号就无法再认证。
+  标记掩码读 `/etc/config/mwan3` 的 `mmx_mask`, 读不到用 `0x3f00`。服务停止时 init 脚本删掉这张表。
 
 ## 看门狗
 

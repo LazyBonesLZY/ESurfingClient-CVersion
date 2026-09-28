@@ -6,12 +6,16 @@
 #include "utils/Logger.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 #define DEMAND_DIR "/var/run/esurfingclient"
 
@@ -53,6 +57,8 @@ static bool s_rank_warned = false;
 static bool s_rx_warned = false;
 static bool s_dir_warned = false;
 static char s_iface_logged[DEMAND_IFACE_LEN] = {0};
+
+static void demand_steer(void);
 
 typedef enum
 {
@@ -146,6 +152,7 @@ void demand_publish(const demand_state_t state)
         s_yield_logged = false;
     }
     write_file(now);
+    demand_steer();
 }
 
 void demand_clear(void)
@@ -160,6 +167,7 @@ void demand_clear(void)
 
 void demand_banner(void)
 {
+    demand_steer();
     if (g_demand_dial == false) return;
 
     if (g_account_order_cnt <= 1)
@@ -393,6 +401,246 @@ static bool within(const uint64_t now, const uint64_t stamp, const uint64_t wind
     return now - stamp < window;
 }
 
+static int run_exec(char* const argv[])
+{
+    const pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0)
+    {
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    if (WIFEXITED(status) == false) return -1;
+    return WEXITSTATUS(status);
+}
+
+static uint32_t mwan_mask(void)
+{
+    static uint32_t mask = 0;
+    if (mask != 0) return mask;
+
+    mask = 0x3f00;
+    FILE* fp = fopen("/etc/config/mwan3", "r");
+    if (fp == NULL) return mask;
+
+    char line[256];
+    while (fgets(line, sizeof(line), fp) != NULL)
+    {
+        char* pos = strstr(line, "mmx_mask");
+        if (pos == NULL) continue;
+
+        pos += strlen("mmx_mask");
+        while (*pos == ' ' || *pos == '\'' || *pos == '"' || *pos == '\t') pos++;
+
+        char* end = NULL;
+        const unsigned long value = strtoul(pos, &end, 0);
+        if (end != pos && value != 0 && value <= 0xffffffffUL) mask = (uint32_t)value;
+        break;
+    }
+    fclose(fp);
+    return mask;
+}
+
+static bool account_is_online(const int index)
+{
+    if (index < 0 || index >= g_account_order_cnt) return false;
+
+    const uint8_t idx = g_account_order[index];
+    if (idx == g_prog_account) return s_state == DEMAND_ONLINE;
+
+    int pid = 0;
+    int state = -1;
+    uint64_t since = 0;
+    uint64_t updated = 0;
+    if (read_peer(idx, &pid, &state, &since, &updated) == false) return false;
+
+    const uint64_t now = get_cur_tm_ms();
+    if (pid_alive(pid) == false || within(now, updated, fresh_ms()) == false) return false;
+    return state == DEMAND_ONLINE;
+}
+
+static const char* find_tool(const char* a, const char* b)
+{
+    if (access(a, X_OK) == 0) return a;
+    if (access(b, X_OK) == 0) return b;
+    return NULL;
+}
+
+static void flush_conntrack(void)
+{
+    FILE* fp = fopen("/proc/net/nf_conntrack", "w");
+    if (fp == NULL) return;
+
+    fputc('f', fp);
+    fclose(fp);
+    LOG_INFO("按需多拨: 已清掉连接跟踪, 原先走下线线路的连接会重新建立");
+}
+
+static bool marks_equal(const uint32_t* a, const int a_n, const uint32_t* b, const int b_n, const uint32_t mask)
+{
+    if (a_n != b_n) return false;
+    for (int i = 0; i < a_n; i++)
+    {
+        if ((a[i] & mask) != (b[i] & mask)) return false;
+    }
+    return true;
+}
+
+static bool steer_apply_nft(const uint32_t target, const uint32_t* from, const int from_n, const uint32_t mask)
+{
+    const char* nft = find_tool("/usr/sbin/nft", "/usr/bin/nft");
+    if (nft == NULL) return false;
+
+    char path[160];
+    snprintf(path, sizeof(path), DEMAND_DIR "/steer.nft");
+    FILE* fp = fopen(path, "w");
+    if (fp == NULL) return false;
+
+    fprintf(fp, "add table ip esurf_demand\n");
+    fprintf(fp, "delete table ip esurf_demand\n");
+    if (from_n > 0)
+    {
+        const uint32_t keep = ~mask;
+        fprintf(fp, "table ip esurf_demand {\n");
+        fprintf(fp, "  chain prerouting {\n");
+        fprintf(fp, "    type filter hook prerouting priority mangle + 1; policy accept;\n");
+        for (int i = 0; i < from_n; i++)
+        {
+            fprintf(fp,
+                "    meta mark and 0x%" PRIx32 " == 0x%" PRIx32
+                " meta mark set meta mark and 0x%" PRIx32 " or 0x%" PRIx32 "\n",
+                mask, from[i] & mask, keep, target & mask);
+        }
+        fprintf(fp, "  }\n}\n");
+    }
+    if (fclose(fp) != 0) return false;
+
+    char* argv[] = {(char*)nft, "-f", path, NULL};
+    return run_exec(argv) == 0;
+}
+
+static bool steer_apply_iptables(const uint32_t target, const uint32_t* from, const int from_n, const uint32_t mask)
+{
+    const char* iptables = find_tool("/usr/sbin/iptables", "/usr/bin/iptables");
+    if (iptables == NULL) return false;
+
+    char mark[64];
+    char* del_argv[] = {(char*)iptables, "-t", "mangle", "-D", "PREROUTING", "-j", "esurf_demand", NULL};
+    run_exec(del_argv);
+    char* flush_argv[] = {(char*)iptables, "-t", "mangle", "-F", "esurf_demand", NULL};
+    run_exec(flush_argv);
+    char* free_argv[] = {(char*)iptables, "-t", "mangle", "-X", "esurf_demand", NULL};
+    run_exec(free_argv);
+
+    if (from_n == 0) return true;
+
+    char* new_argv[] = {(char*)iptables, "-t", "mangle", "-N", "esurf_demand", NULL};
+    if (run_exec(new_argv) != 0) return false;
+
+    for (int i = 0; i < from_n; i++)
+    {
+        snprintf(mark, sizeof(mark), "0x%" PRIx32 "/0x%" PRIx32, from[i] & mask, mask);
+        char xmark[64];
+        snprintf(xmark, sizeof(xmark), "0x%" PRIx32 "/0x%" PRIx32, target & mask, mask);
+        char* add_argv[] = {
+            (char*)iptables, "-t", "mangle", "-A", "esurf_demand",
+            "-m", "mark", "--mark", mark, "-j", "MARK", "--set-xmark", xmark, NULL
+        };
+        if (run_exec(add_argv) != 0) return false;
+    }
+
+    char* jump_argv[] = {(char*)iptables, "-t", "mangle", "-A", "PREROUTING", "-j", "esurf_demand", NULL};
+    return run_exec(jump_argv) == 0;
+}
+
+static void demand_steer(void)
+{
+    static uint32_t applied_target = 0;
+    static uint32_t applied_from[ACCOUNT_ORDER_MAX];
+    static int applied_n = -1;
+    static bool warned = false;
+
+    uint32_t target = 0;
+    uint32_t from[ACCOUNT_ORDER_MAX];
+    int from_n = 0;
+
+    if (demand_enabled())
+    {
+        const uint32_t mask = mwan_mask();
+        for (int i = 0; i < g_account_order_cnt; i++)
+        {
+            if (g_account_mark[i] == 0) continue;
+            if (account_is_online(i) == false) continue;
+            target = g_account_mark[i];
+            break;
+        }
+
+        if (target != 0)
+        {
+            for (int i = 0; i < g_account_order_cnt; i++)
+            {
+                const uint32_t mark = g_account_mark[i];
+                if (mark == 0 || (mark & mask) == (target & mask)) continue;
+                if (account_is_online(i)) continue;
+                if (from_n < ACCOUNT_ORDER_MAX) from[from_n++] = mark;
+            }
+        }
+    }
+
+    const uint32_t mask = mwan_mask();
+    if (applied_n >= 0 && (applied_target & mask) == (target & mask) &&
+        marks_equal(applied_from, applied_n, from, from_n, mask))
+    {
+        return;
+    }
+
+    ensure_dir();
+    const int lock_fd = open(DEMAND_DIR "/steer.lock", O_CREAT | O_RDWR, 0644);
+    if (lock_fd < 0) return;
+    if (flock(lock_fd, LOCK_EX) != 0)
+    {
+        close(lock_fd);
+        return;
+    }
+
+    const bool grew = applied_n >= 0 && from_n > applied_n;
+    const bool ok = steer_apply_nft(target, from, from_n, mask) ||
+                    steer_apply_iptables(target, from, from_n, mask);
+    if (ok == false)
+    {
+        if (warned == false)
+        {
+            LOG_WARN("按需多拨: 无法改写转发标记, 未认证的线路仍会被 mwan3 分到流量");
+            warned = true;
+        }
+        flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        return;
+    }
+
+    warned = false;
+    if (from_n == 0)
+    {
+        if (applied_n > 0) LOG_INFO("按需多拨: 转发恢复由 mwan3 分配");
+    }
+    else
+    {
+        LOG_INFO("按需多拨: 未认证线路的转发改走到标记 0x%" PRIx32, target);
+    }
+
+    applied_target = target;
+    applied_n = from_n;
+    for (int i = 0; i < from_n; i++) applied_from[i] = from[i];
+
+    if (grew) flush_conntrack();
+
+    flock(lock_fd, LOCK_UN);
+    close(lock_fd);
+}
+
 static void classify(const uint64_t now, const int my, int* online_ahead, int* blocking)
 {
     *online_ahead = 0;
@@ -558,6 +806,7 @@ void demand_touch(void)
 
     demand_sample();
     write_file(now);
+    demand_steer();
 
     if (s_state != DEMAND_AUTH && s_state != DEMAND_ONLINE) return;
     if (tl_thread_idx < 0 || g_prog_status == NULL) return;
