@@ -375,6 +375,25 @@ static uint64_t current_bps(const uint64_t now)
     return window_bps(now, DEMAND_SAMPLES);
 }
 
+static uint64_t peak_bps(const uint64_t now)
+{
+    uint64_t peak = 0;
+    const int begin = s_count > 4 ? s_count - 4 : 0;
+
+    for (int i = begin + 1; i < s_count; i++)
+    {
+        const demand_sample_t* older = &s_samples[i - 1];
+        const demand_sample_t* newer = &s_samples[i];
+        if (newer->ms <= older->ms) continue;
+        if (now > newer->ms && now - newer->ms > 30000) continue;
+        if (newer->bytes < older->bytes) continue;
+
+        const uint64_t rate = (newer->bytes - older->bytes) * 1000ULL / (newer->ms - older->ms);
+        if (rate > peak) peak = rate;
+    }
+    return peak;
+}
+
 static bool pid_alive(const int pid)
 {
     if (pid <= 0) return false;
@@ -484,7 +503,7 @@ static void flush_conntrack(void)
 
     fputc('f', fp);
     fclose(fp);
-    LOG_INFO("按需多拨: 已清掉连接跟踪, 原先走下线线路的连接会重新建立");
+    LOG_INFO("按需多拨: 已清掉连接跟踪, 连接会按当前在线线路重新建立");
 }
 
 static bool marks_equal(const uint32_t* a, const int a_n, const uint32_t* b, const int b_n, const uint32_t mask)
@@ -614,7 +633,7 @@ static void demand_steer(void)
         return;
     }
 
-    const bool grew = applied_n >= 0 && from_n > applied_n;
+    const bool grew = applied_n >= 0 && from_n != applied_n;
     const bool ok = steer_apply_nft(target, from, from_n, mask) ||
                     steer_apply_iptables(target, from, from_n, mask);
     if (ok == false)
@@ -727,14 +746,14 @@ static demand_act_t decide(const bool online, const bool authing)
     classify(now, my, &ahead, &blocking);
 
     const uint64_t bps = current_bps(now);
-    const uint64_t recent = window_bps(now, 3);
+    const uint64_t peak = peak_bps(now);
     const uint64_t high = (uint64_t)ahead * (uint64_t)g_demand_mbps * 1000000ULL / 8ULL;
-    const uint64_t rise = high - high / 5;
+    const uint64_t rise = high / 2;
     const uint64_t low = high / 2;
 
     s_dbg_ahead = ahead;
     s_dbg_blocking = blocking;
-    s_dbg_bps = recent;
+    s_dbg_bps = peak;
 
     if (ahead == 0 && blocking == 0)
     {
@@ -761,13 +780,13 @@ static demand_act_t decide(const bool online, const bool authing)
         return ACT_HOLD;
     }
 
-    if (blocking == 0 && ahead > 0 && rise > 0 && recent >= rise) return ACT_GO;
+    if (blocking == 0 && ahead > 0 && rise > 0 && peak >= rise) return ACT_GO;
     return ACT_HOLD;
 }
 
 static void log_snapshot(const char* what)
 {
-    LOG_INFO("按需多拨: %s (前面在线 %d 个, 挡路 %d 个, 近几秒下行约 %" PRIu64 " Mbps)",
+    LOG_INFO("按需多拨: %s (前面在线 %d 个, 挡路 %d 个, 最近一秒下行约 %" PRIu64 " Mbps)",
         what, s_dbg_ahead, s_dbg_blocking, (s_dbg_bps * 8ULL) / 1000000ULL);
 }
 

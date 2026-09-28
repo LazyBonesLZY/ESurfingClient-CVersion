@@ -181,7 +181,7 @@ return view.extend({
                             ev.target.value = self.config.demand_mbps;
                         }
                     }),
-                    E('div', { class: 'cbi-value-description' }, '已有 N 个账号在线、且近几秒下行达到 N × 这个值的八成 (Mbps) 时, 再认证下一个账号。单线封顶在这个数附近时, 按满速去等第二条永远等不到')
+                    E('div', { class: 'cbi-value-description' }, '已有 N 个账号在线、且最近一秒下行达到 N × 这个值的一半 (Mbps) 时, 再认证下一个账号')
                 ])
             ]),
             E('div', { class: 'cbi-value' }, [
@@ -300,7 +300,7 @@ return view.extend({
             E('div', { style: 'margin-left: 25px;'}, [
                 E('p', { class: 'desc' }, '用于方便地调整 ESurfing 程序的配置文件'),
                 E('p', { class: 'desc' }, '账号密码与原电信认证程序的账号密码相同'),
-                E('p', { class: 'desc' }, 'LuCI 版本: 2.1.4-r3'),
+                E('p', { class: 'desc' }, 'LuCI 版本: 2.1.4-r4'),
                 E('p', { class: 'desc' }, '> Powered by BadGhost')
             ]),
             E('div', { class: 'cbi-section' }, [

@@ -173,7 +173,7 @@ end
 <div style='margin-left: 25px;'>
     <p class='desc'>用于方便地调整 ESurfing 程序的配置文件</p>
     <p class='desc'>账号密码与原电信认证程序的账号密码相同</p>
-    <p class='desc'>LuCI 版本: 2.1.4-r3</p>
+    <p class='desc'>LuCI 版本: 2.1.4-r4</p>
     <p class='desc' style='margin-bottom: 15px;'>> Powered by BadGhost</p>
 </div>
 
@@ -240,7 +240,7 @@ end
                 <label class='cbi-value-title' for='demand_mbps'>扩容阈值</label>
                 <div class='cbi-value-field'>
                     <input type='number' id='demand_mbps' class='cbi-input-text' name='demand_mbps' min='1' step='1' />
-                    <div class='cbi-value-description'>已有 N 个账号在线、且近几秒下行达到 N × 这个值的八成 (Mbps) 时, 再认证下一个账号。单线封顶在这个数附近时, 按满速去等第二条永远等不到</div>
+                    <div class='cbi-value-description'>已有 N 个账号在线、且最近一秒下行达到 N × 这个值的一半 (Mbps) 时, 再认证下一个账号</div>
                 </div>
             </div>
             <div class='cbi-value'>
