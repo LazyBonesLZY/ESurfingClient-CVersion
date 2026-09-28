@@ -583,8 +583,33 @@ static bool steer_apply_iptables(const uint32_t target, const uint32_t* from, co
     return run_exec(jump_argv) == 0;
 }
 
+static bool steer_is_leader(void)
+{
+    const uint64_t now = get_cur_tm_ms();
+
+    for (int i = 0; i < g_account_order_cnt; i++)
+    {
+        const uint8_t idx = g_account_order[i];
+        if (idx == g_prog_account) return true;
+
+        int pid = 0;
+        int state = -1;
+        uint64_t since = 0;
+        uint64_t updated = 0;
+        if (read_peer(idx, &pid, &state, &since, &updated) == false)
+        {
+            if (within(now, g_start_run_tm, 5000)) return false;
+            continue;
+        }
+        if (pid_alive(pid) && within(now, updated, fresh_ms())) return false;
+    }
+    return true;
+}
+
 static void demand_steer(void)
 {
+    if (steer_is_leader() == false) return;
+
     static uint32_t applied_target = 0;
     static uint32_t applied_from[ACCOUNT_ORDER_MAX];
     static int applied_n = -1;

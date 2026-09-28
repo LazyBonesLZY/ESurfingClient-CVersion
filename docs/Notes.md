@@ -67,6 +67,7 @@
 - **未认证线路的转发改写不碰 OUTPUT** (`DemandDial.c` 的 nft 表 `esurf_demand`, 钩子是 `prerouting` / `mangle + 1`)。
   认证进程的包走 OUTPUT 加 `SO_MARK`, 如果连 OUTPUT 一起改, 待机账号就无法再认证。
   标记掩码读 `/etc/config/mwan3` 的 `mmx_mask`, 读不到用 `0x3f00`。服务停止时 init 脚本删掉这张表。
+  只有排在最前且状态文件还新鲜的那个认证进程会改这张表。每个进程各记一份「已经应用的规则」再一起写, 后写的会把刚上线的线路又改回第一条。
 
 ## 看门狗
 
