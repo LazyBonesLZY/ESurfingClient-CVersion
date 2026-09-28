@@ -354,17 +354,25 @@ static void demand_sample(void)
     s_count++;
 }
 
-static uint64_t current_bps(const uint64_t now)
+static uint64_t window_bps(const uint64_t now, const int samples)
 {
-    if (s_count < 2) return 0;
+    if (s_count < 2 || samples < 2) return 0;
 
-    const demand_sample_t* oldest = &s_samples[0];
+    int start = s_count - samples;
+    if (start < 0) start = 0;
+
+    const demand_sample_t* oldest = &s_samples[start];
     const demand_sample_t* newest = &s_samples[s_count - 1];
     if (newest->ms <= oldest->ms) return 0;
     if (now > newest->ms && now - newest->ms > 30000) return 0;
     if (newest->bytes < oldest->bytes) return 0;
 
     return (newest->bytes - oldest->bytes) * 1000ULL / (newest->ms - oldest->ms);
+}
+
+static uint64_t current_bps(const uint64_t now)
+{
+    return window_bps(now, DEMAND_SAMPLES);
 }
 
 static bool pid_alive(const int pid)
@@ -719,12 +727,14 @@ static demand_act_t decide(const bool online, const bool authing)
     classify(now, my, &ahead, &blocking);
 
     const uint64_t bps = current_bps(now);
+    const uint64_t recent = window_bps(now, 3);
     const uint64_t high = (uint64_t)ahead * (uint64_t)g_demand_mbps * 1000000ULL / 8ULL;
+    const uint64_t rise = high - high / 5;
     const uint64_t low = high / 2;
 
     s_dbg_ahead = ahead;
     s_dbg_blocking = blocking;
-    s_dbg_bps = bps;
+    s_dbg_bps = recent;
 
     if (ahead == 0 && blocking == 0)
     {
@@ -751,13 +761,13 @@ static demand_act_t decide(const bool online, const bool authing)
         return ACT_HOLD;
     }
 
-    if (blocking == 0 && ahead > 0 && high > 0 && bps >= high) return ACT_GO;
+    if (blocking == 0 && ahead > 0 && rise > 0 && recent >= rise) return ACT_GO;
     return ACT_HOLD;
 }
 
 static void log_snapshot(const char* what)
 {
-    LOG_INFO("按需多拨: %s (前面在线 %d 个, 挡路 %d 个, 近 10 秒下行约 %" PRIu64 " Mbps)",
+    LOG_INFO("按需多拨: %s (前面在线 %d 个, 挡路 %d 个, 近几秒下行约 %" PRIu64 " Mbps)",
         what, s_dbg_ahead, s_dbg_blocking, (s_dbg_bps * 8ULL) / 1000000ULL);
 }
 
