@@ -8,6 +8,10 @@
 #include "utils/Watchdog.h"
 #include "utils/Logger.h"
 
+#ifdef __OPENWRT__
+#include "utils/DemandDial.h"
+#endif
+
 #ifdef _WIN32
 #else
 #include <string.h>
@@ -23,6 +27,9 @@ _Thread_local char s_request_url[LOCATION_LEN] = {0};
 
 curl_resp_t post(const char* url, const char* data)
 {
+#ifdef __OPENWRT__
+    demand_touch();
+#endif
     LOG_DEBUG("POST 地址: %s", url);
     LOG_DEBUG("POST 数据: %s", data);
 
@@ -158,6 +165,9 @@ curl_resp_t post(const char* url, const char* data)
 
 curl_resp_t get(const char* url, const bool connect_only)
 {
+#ifdef __OPENWRT__
+    demand_touch();
+#endif
     LOG_DEBUG("GET 地址: %s", url);
 
     curl_resp_t resp = {0};

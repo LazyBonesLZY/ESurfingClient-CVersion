@@ -5,6 +5,10 @@
 #include "utils/PlatformInternal.h"
 #include "utils/Watchdog.h"
 
+#ifdef __OPENWRT__
+#include "utils/DemandDial.h"
+#endif
+
 #include <stdio.h>
 #include <time.h>
 
@@ -47,6 +51,9 @@ void sleep_ms(const uint64_t ms, const bool can_stop)
 
         while (elapsed < ms && g_thread_keep_alive && g_stop_requested == 0)
         {
+#ifdef __OPENWRT__
+            demand_touch();
+#endif
             if (tl_thread_idx > -1)
             {
                 if (g_prog_status[tl_thread_idx].runtime_status.is_running == false || g_prog_status[tl_thread_idx].runtime_status.is_need_reauth)

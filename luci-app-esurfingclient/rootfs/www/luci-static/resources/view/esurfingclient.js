@@ -48,6 +48,10 @@ return view.extend({
             conn_timeout: 3,
             op_timeout: 5,
             web_port: 8888,
+            demand_dial: false,
+            demand_mbps: 100,
+            demand_idle_mins: 5,
+            demand_iface: '',
             accounts: []
         };
         
@@ -147,6 +151,72 @@ return view.extend({
                         '相对路径按 ', E('code', {}, '/var/log/esurfing'), ' 解析; 改成闪存上的目录前请想清楚容量与写次数'
                     ])
                 ])
+            ]),
+            E('div', { class: 'cbi-value' }, [
+                E('label', { class: 'cbi-value-title' }, '按需多拨'),
+                E('div', { class: 'cbi-value-field' }, [
+                    E('input', {
+                        type: 'checkbox',
+                        id: 'demand_dial',
+                        checked: self.config.demand_dial ? true : undefined,
+                        change: function(ev) {
+                            self.config.demand_dial = ev.target.checked;
+                        }
+                    }),
+                    E('div', { class: 'cbi-value-description' }, '平时只认证排在最前的账号, 下载量大时再逐个认证后面的账号。进程仍然每个账号一个, 待机的账号不占用在线名额')
+                ])
+            ]),
+            E('div', { class: 'cbi-value' }, [
+                E('label', { class: 'cbi-value-title' }, '扩容阈值'),
+                E('div', { class: 'cbi-value-field' }, [
+                    E('input', {
+                        type: 'number',
+                        id: 'demand_mbps',
+                        class: 'cbi-input-text',
+                        min: 1,
+                        step: 1,
+                        value: self.config.demand_mbps,
+                        change: function(ev) {
+                            self.config.demand_mbps = self.normalizeTimeout(ev.target.value, 100);
+                            ev.target.value = self.config.demand_mbps;
+                        }
+                    }),
+                    E('div', { class: 'cbi-value-description' }, '已有 N 个账号在线、且最近 10 秒平均下行达到 N × 这个值 (Mbps) 时, 再认证下一个账号')
+                ])
+            ]),
+            E('div', { class: 'cbi-value' }, [
+                E('label', { class: 'cbi-value-title' }, '空闲收回'),
+                E('div', { class: 'cbi-value-field' }, [
+                    E('input', {
+                        type: 'number',
+                        id: 'demand_idle_mins',
+                        class: 'cbi-input-text',
+                        min: 1,
+                        step: 1,
+                        value: self.config.demand_idle_mins,
+                        change: function(ev) {
+                            self.config.demand_idle_mins = self.normalizeTimeout(ev.target.value, 5);
+                            ev.target.value = self.config.demand_idle_mins;
+                        }
+                    }),
+                    E('div', { class: 'cbi-value-description' }, '下行连续这么多分钟低于扩容线的一半时, 登出最后扩上去的账号 (单位: 分钟)')
+                ])
+            ]),
+            E('div', { class: 'cbi-value' }, [
+                E('label', { class: 'cbi-value-title' }, '统计网口'),
+                E('div', { class: 'cbi-value-field' }, [
+                    E('input', {
+                        type: 'text',
+                        id: 'demand_iface',
+                        class: 'cbi-input-text',
+                        placeholder: '留空则自动',
+                        value: self.config.demand_iface || '',
+                        change: function(ev) {
+                            self.config.demand_iface = ev.target.value.trim();
+                        }
+                    }),
+                    E('div', { class: 'cbi-value-description' }, '留空时统计有默认路由的网口接收流量; 要指定就填网口名, 多个用空格或逗号隔开, 例如 wan1,wan2')
+                ])
             ])
         ]);
 
@@ -230,7 +300,7 @@ return view.extend({
             E('div', { style: 'margin-left: 25px;'}, [
                 E('p', { class: 'desc' }, '用于方便地调整 ESurfing 程序的配置文件'),
                 E('p', { class: 'desc' }, '账号密码与原电信认证程序的账号密码相同'),
-                E('p', { class: 'desc' }, 'LuCI 版本: 2.1.1-r5'),
+                E('p', { class: 'desc' }, 'LuCI 版本: 2.1.4-r1'),
                 E('p', { class: 'desc' }, '> Powered by BadGhost')
             ]),
             E('div', { class: 'cbi-section' }, [
@@ -263,6 +333,10 @@ return view.extend({
                 // 旧配置文件可能缺少超时参数, 这里补齐默认值, 避免输入框显示空值
                 self.config.conn_timeout = self.normalizeTimeout(self.config.conn_timeout, 3);
                 self.config.op_timeout = self.normalizeTimeout(self.config.op_timeout, 5);
+                self.config.demand_dial = !!self.config.demand_dial;
+                self.config.demand_mbps = self.normalizeTimeout(self.config.demand_mbps, 100);
+                self.config.demand_idle_mins = self.normalizeTimeout(self.config.demand_idle_mins, 5);
+                if (typeof self.config.demand_iface !== 'string') self.config.demand_iface = '';
                 self.showNotification('读取配置文件成功', 'success');
                 return self.config;
             })
@@ -275,6 +349,10 @@ return view.extend({
                     conn_timeout: 3,
                     op_timeout: 5,
                     web_port: 8888,
+                    demand_dial: false,
+                    demand_mbps: 100,
+                    demand_idle_mins: 5,
+                    demand_iface: '',
                     accounts: [
                         {
                             username: '加载失败',
@@ -834,6 +912,10 @@ return view.extend({
                         conn_timeout: 3,
                         op_timeout: 5,
                         web_port: 8888,
+                        demand_dial: false,
+                        demand_mbps: 100,
+                        demand_idle_mins: 5,
+                        demand_iface: '',
                         accounts: [
                             {
                                 username: '',

@@ -24,6 +24,8 @@ extern bool get_service_mode();
 
 extern bool start_web_server_remote();
 extern bool start_web_server();
+#else
+#include "utils/DemandDial.h"
 #endif
 
 typedef enum
@@ -187,6 +189,21 @@ int dialer_app(void* arg)
             LOG_WARN("守护进程已退出, 本进程一并退出");
             break;
         }
+#ifdef __OPENWRT__
+        if (demand_enabled())
+        {
+            const bool online = g_prog_status[tl_thread_idx].runtime_status.is_initialized &&
+                                g_prog_status[tl_thread_idx].runtime_status.is_authed;
+            demand_publish(online ? DEMAND_ONLINE : DEMAND_AUTH);
+            if (demand_yield(online))
+            {
+                demand_publish(DEMAND_STANDBY);
+                g_prog_status[tl_thread_idx].runtime_status.is_need_reauth = false;
+                g_prog_status[tl_thread_idx].runtime_status.is_running = false;
+                break;
+            }
+        }
+#endif
         /**
          * 认证进程里没有独立的时间控制线程, 由本线程自己校正时间窗口
          * 单进程模式下由时间控制线程统一校正, 这里不重复做
@@ -207,6 +224,13 @@ int dialer_app(void* arg)
         }
         if (g_prog_status[tl_thread_idx].runtime_status.is_need_reauth)
         {
+#ifdef __OPENWRT__
+            if (demand_enabled())
+            {
+                demand_publish(DEMAND_STANDBY);
+                g_prog_status[tl_thread_idx].runtime_status.is_need_reauth = false;
+            }
+#endif
             LOG_INFO("线程需要重置, 正在退出");
             g_prog_status[tl_thread_idx].runtime_status.is_running = false;
             break;

@@ -4,7 +4,7 @@ PKG_NAME:=esurfingclient
 PKG_LICENSE:=Apache-2.0
 PKG_LICENSE_FILES:=LICENSE
 
-PKG_VERSION:=1.0.0
+PKG_VERSION:=2.1.4
 PKG_RELEASE:=1
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
@@ -78,6 +78,7 @@ echo "正在清理 ESurfing 客户端残留文件"
 rm -f /etc/config/esurfingclient*
 
 rm -rf /var/log/esurfing
+rm -rf /var/run/esurfingclient
 
 exit 0
 endef

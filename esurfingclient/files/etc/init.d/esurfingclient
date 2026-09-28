@@ -7,6 +7,11 @@ USE_PROCD=1
 PROG=/usr/bin/esurfingclient
 
 LOG_DIR_DEFAULT=/var/log/esurfing/logs
+STATE_DIR=/var/run/esurfingclient
+
+clear_demand_state() {
+  rm -rf "$STATE_DIR"
+}
 
 get_log_dir() {
   local dir
@@ -83,6 +88,8 @@ start_service() {
       return 0
   fi
 
+  clear_demand_state
+
   local idx
   local count=0
   local flat=""
@@ -130,6 +137,8 @@ stop_service() {
 
   # 没等到实例退出就先不归档: 留给下次启动兜底, 总比给还在写的文件改名强
   [ -n "$(auth_pids)" ] || archive_previous_log
+
+  clear_demand_state
 }
 
 reload_service() {

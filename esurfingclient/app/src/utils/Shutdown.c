@@ -18,6 +18,8 @@ extern bool get_service_mode();
 extern void restart_process();
 extern void stop_web_server();
 #include "control/Control.h"
+#else
+#include "utils/DemandDial.h"
 #endif
 
 void shut(const int8_t exit_code)
@@ -37,6 +39,10 @@ void shut(const int8_t exit_code)
      * 不停的话它会把正常退出误判成卡死, 还会盖掉真正的退出原因
      */
     watchdog_stop();
+
+#ifdef __OPENWRT__
+    demand_clear();
+#endif
 
     LOG_INFO("主程序正在关闭");
     g_need_exit = true;

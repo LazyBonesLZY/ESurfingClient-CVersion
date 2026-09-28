@@ -391,7 +391,7 @@ jobs:
       - openwrt-packages-ipk
       - openwrt-packages-apk
     runs-on: ubuntu-latest
-    if: always() && !cancelled()
+    if: always() && !cancelled() && github.event.inputs.platforms == 'all'
     steps:
       - uses: actions/checkout@v7
 

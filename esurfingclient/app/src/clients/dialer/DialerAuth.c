@@ -16,6 +16,8 @@
 
 #ifndef __OPENWRT__
 #include "control/Control.h"
+#else
+#include "utils/DemandDial.h"
 #endif
 
 AuthStatus auth()
@@ -217,6 +219,11 @@ int work_auth()
      */
     watchdog_start();
 
+#ifdef __OPENWRT__
+    demand_banner();
+    if (demand_enabled()) demand_publish(DEMAND_STANDBY);
+#endif
+
     /**
      * 先把上次没做完的登出补上, 再走正常流程
      *
@@ -246,6 +253,9 @@ int work_auth()
 
         if (g_prog_status[0].runtime_status.is_time_disabled)
         {
+#ifdef __OPENWRT__
+            if (demand_enabled()) demand_publish(DEMAND_OFF);
+#endif
             /**
              * 不在允许时段, 此时没有会话需要登出.
              * 必须把这两个标志复位, 否则 sleep_ms 会因为 is_need_reauth 立刻返回造成忙等
@@ -262,6 +272,19 @@ int work_auth()
             sleep_ms(wait_ms, true);
             continue;
         }
+
+#ifdef __OPENWRT__
+        if (demand_enabled() && demand_admit() == false)
+        {
+            demand_publish(DEMAND_STANDBY);
+            g_prog_status[0].runtime_status.is_running = true;
+            g_prog_status[0].runtime_status.is_need_reauth = false;
+            network_ready = false;
+            sleep_ms(1000, true);
+            continue;
+        }
+        if (demand_enabled()) demand_publish(DEMAND_AUTH);
+#endif
 
         /**
          * 启动时先等网络进入需要认证的状态 (与单进程模式一致).
@@ -292,6 +315,8 @@ int work_auth()
             return auth_code;
         }
 
+        watchdog_start();
+
         /**
          * Web 端请求"应用新配置"时会把 g_cfg_loaded 置为 false,
          * 这里重新加载. 配置里若已经没有本实例负责的账号, load_cfg 会失败并让进程退出,
@@ -305,6 +330,10 @@ int work_auth()
             network_ready = false; // 换过配置后重新做网络检测
             continue;
         }
+
+#ifdef __OPENWRT__
+        if (demand_enabled() && demand_admit() == false) continue;
+#endif
 
         LOG_INFO("配置 %" PRIu8 " 需要重新认证, 重新开始认证流程", g_prog_status[0].login_cfg.idx);
     }

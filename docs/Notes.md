@@ -53,6 +53,18 @@
   - `start_service` 里那次归档只是兜底（被强杀 / 结束超时 / 掉电时上一轮没走到停止），
     正常停止/重启时它是空操作，所以一次运行只会留下一个归档文件。
 
+## 按需多拨 (仅 OpenWrt 认证进程)
+
+- **状态文件在 `/var/run/esurfingclient/account<配置序号>.state`** (`src/utils/DemandDial.c`)。
+  一行四个字段: `pid state since_ms updated_ms`。`state` 是 0 时段外 / 1 待机 / 2 认证中 / 3 在线。
+  `since_ms` 只在状态变化时更新, `updated_ms` 每秒刷新。写入用临时文件加 `rename`。
+  init 脚本在拉起实例之前、以及停止之后会删掉整个目录; 进程正常退出时 `shut()` 删自己那一个文件。
+- **排位是「可用账号」的顺序, 不是配置文件里的下标** (`g_account_order`, 在 `load_cfg` 里、
+  `--account` 挑走单个账号之前填好)。自动标记值也是按这个顺序算的, 所以排位必须和它用同一轮遍历。
+- **只在 `--role auth` 且可用账号不少于 2 个时生效**。单进程模式、桌面端、只配了一个账号, 都按原来的方式认证。
+- **看门狗会在 `dialer_app` 返回时关掉** (`DialerClient.c`)。认证进程如果还要继续 (重新认证或转入待机),
+  `work_auth` 必须再 `watchdog_start()` 一次, 否则待机那几小时没有看门狗。
+
 ## 看门狗
 
 - **为什么需要它**（`include/utils/Watchdog.h`）：外部监管者（procd / systemd / SCM）只能看到

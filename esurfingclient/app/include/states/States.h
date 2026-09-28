@@ -49,6 +49,16 @@
 
 #define DEFAULT_WEB_EXTERNAL_ACC false
 
+#define DEFAULT_DEMAND_DIAL false
+
+#define DEFAULT_DEMAND_MBPS 100
+
+#define DEFAULT_DEMAND_IDLE_MINS 5
+
+#define DEMAND_IFACE_LEN 128
+
+#define ACCOUNT_ORDER_MAX 255
+
 typedef enum
 {
     GET_TICKET = 1,
@@ -189,6 +199,18 @@ extern bool g_cfg_loaded;
 extern long g_conn_timeout;
 
 extern long g_op_timeout;
+
+extern bool g_demand_dial;
+
+extern uint32_t g_demand_mbps;
+
+extern uint32_t g_demand_idle_mins;
+
+extern char g_demand_iface[DEMAND_IFACE_LEN];
+
+extern uint8_t g_account_order[ACCOUNT_ORDER_MAX];
+
+extern uint8_t g_account_order_cnt;
 
 /** @brief 刷新状态函数 */
 void refresh_states();

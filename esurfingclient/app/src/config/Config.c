@@ -28,6 +28,10 @@ static const char s_default_cfg[] = "{\n"
                                     "   \"conn_timeout\": 7,\n"
                                     "   \"op_timeout\": 10,\n"
                                     "   \"web_port\": 8888,\n"
+                                    "   \"demand_dial\": false,\n"
+                                    "   \"demand_mbps\": 100,\n"
+                                    "   \"demand_idle_mins\": 5,\n"
+                                    "   \"demand_iface\": \"\",\n"
                                     "   \"accounts\": [\n"
                                     "       {\n"
                                     "           \"username\": \"\",\n"
@@ -155,6 +159,11 @@ const char* get_config_path(void)
 bool load_cfg()
 {
     g_cfg_loaded = false;
+    g_demand_dial = DEFAULT_DEMAND_DIAL;
+    g_demand_mbps = DEFAULT_DEMAND_MBPS;
+    g_demand_idle_mins = DEFAULT_DEMAND_IDLE_MINS;
+    g_demand_iface[0] = '\0';
+    g_account_order_cnt = 0;
     /**
      * 桌面分支直接写 g_prog_status[0], 这里保证至少有一格可用
      * (OpenWrt 分支后面会按配置数重新分配)
@@ -377,6 +386,59 @@ bool load_cfg()
         LOG_DEBUG("web_external_acc 参数不存在, 使用默认参数 (关闭)");
     }
 
+    const cJSON* demand_dial = cJSON_GetObjectItem(cfg_json, "demand_dial");
+    if (demand_dial)
+    {
+        if (cJSON_IsBool(demand_dial))
+        {
+            g_demand_dial = cJSON_IsTrue(demand_dial);
+        }
+        else
+        {
+            LOG_WARN("demand_dial 参数不正确 (应为 true / false), 使用默认参数 (关闭)");
+        }
+    }
+
+    const cJSON* demand_mbps = cJSON_GetObjectItem(cfg_json, "demand_mbps");
+    if (demand_mbps)
+    {
+        if (cJSON_IsNumber(demand_mbps) && demand_mbps->valueint >= 1 && demand_mbps->valueint <= 10000)
+        {
+            g_demand_mbps = (uint32_t)demand_mbps->valueint;
+        }
+        else
+        {
+            LOG_WARN("demand_mbps 参数不正确 (应为 1 - 10000), 使用默认参数 (%d Mbps)", DEFAULT_DEMAND_MBPS);
+        }
+    }
+
+    const cJSON* demand_idle_mins = cJSON_GetObjectItem(cfg_json, "demand_idle_mins");
+    if (demand_idle_mins)
+    {
+        if (cJSON_IsNumber(demand_idle_mins) && demand_idle_mins->valueint >= 1 && demand_idle_mins->valueint <= 1440)
+        {
+            g_demand_idle_mins = (uint32_t)demand_idle_mins->valueint;
+        }
+        else
+        {
+            LOG_WARN("demand_idle_mins 参数不正确 (应为 1 - 1440), 使用默认参数 (%d 分钟)", DEFAULT_DEMAND_IDLE_MINS);
+        }
+    }
+
+    const cJSON* demand_iface = cJSON_GetObjectItem(cfg_json, "demand_iface");
+    if (demand_iface)
+    {
+        if (cJSON_IsString(demand_iface) && demand_iface->valuestring != NULL &&
+            strlen(demand_iface->valuestring) < DEMAND_IFACE_LEN)
+        {
+            snprintf(g_demand_iface, sizeof(g_demand_iface), "%s", demand_iface->valuestring);
+        }
+        else
+        {
+            LOG_WARN("demand_iface 参数不正确, 改为自动统计有默认路由的网口");
+        }
+    }
+
     const cJSON* accounts = cJSON_GetObjectItem(cfg_json, "accounts");
     if (accounts == NULL || cJSON_IsArray(accounts) == false || cJSON_GetArraySize(accounts) == 0)
     {
@@ -504,9 +566,15 @@ bool load_cfg()
 
         g_prog_status[valid_i].login_cfg.idx = i + 1;
         LOG_INFO("配置 %" PRIu8 " 可用, 将会尝试使用", i + 1);
+        if (valid_cnt >= 0 && valid_cnt < ACCOUNT_ORDER_MAX)
+        {
+            g_account_order[valid_cnt] = (uint8_t)(i + 1);
+        }
         valid_cnt++;
         valid_i++;
     }
+
+    g_account_order_cnt = valid_cnt > 0 ? (uint8_t)valid_cnt : 0;
 
 #else
 

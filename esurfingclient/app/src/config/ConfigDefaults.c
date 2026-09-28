@@ -36,6 +36,10 @@ static const cfg_def_t s_cfg_defaults[] = {
     {"conn_timeout",     CFG_DEF_NUM, false, DEFAULT_CONN_TIMEOUT, NULL, "秒"},
     {"op_timeout",       CFG_DEF_NUM, false, DEFAULT_OP_TIMEOUT, NULL, "秒"},
     {"web_port",         CFG_DEF_NUM, false, DEFAULT_WEB_PORT, NULL, NULL},
+    {"demand_dial",      CFG_DEF_BOOL, DEFAULT_DEMAND_DIAL, 0, NULL, NULL},
+    {"demand_mbps",      CFG_DEF_NUM, false, DEFAULT_DEMAND_MBPS, NULL, "Mbps"},
+    {"demand_idle_mins", CFG_DEF_NUM, false, DEFAULT_DEMAND_IDLE_MINS, NULL, "分钟"},
+    {"demand_iface",     CFG_DEF_STR, false, 0, "", NULL},
 };
 
 static const cfg_def_t s_account_defaults[] = {

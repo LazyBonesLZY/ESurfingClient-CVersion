@@ -53,3 +53,15 @@ bool g_cfg_loaded = false;
 long g_conn_timeout = DEFAULT_CONN_TIMEOUT;
 
 long g_op_timeout = DEFAULT_OP_TIMEOUT;
+
+bool g_demand_dial = DEFAULT_DEMAND_DIAL;
+
+uint32_t g_demand_mbps = DEFAULT_DEMAND_MBPS;
+
+uint32_t g_demand_idle_mins = DEFAULT_DEMAND_IDLE_MINS;
+
+char g_demand_iface[DEMAND_IFACE_LEN] = {0};
+
+uint8_t g_account_order[ACCOUNT_ORDER_MAX] = {0};
+
+uint8_t g_account_order_cnt = 0;
