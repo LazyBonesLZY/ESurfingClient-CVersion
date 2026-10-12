@@ -224,13 +224,23 @@ int main(void)
     set_rates(40, 0);
     check("下行 40M < 半条线 (50M) => HOLD", decide(false, false), ACT_HOLD);
 
-    printf("\n== 场景 C: 扩容后的静默期 ==\n");
+    printf("\n== 场景 C: 扩容后的静默期 (智能多播开) ==\n");
+    g_smart_dial = true;
     reset_decision_state();
     set_rates(120, 0);
     check("第一次达到阈值 => GO", decide(false, false), ACT_GO);
     check("静默期内不下发第二次扩容 => HOLD", decide(false, false), ACT_HOLD);
     advance(61000, 120, 0);
     check("静默期过后可以再扩容 => GO", decide(false, false), ACT_GO);
+
+    printf("\n== 场景 C2: 没开智能多播时不该受静默期影响 (老用户行为不变) ==\n");
+    g_smart_dial = false;
+    g_smart_hold_secs = 60;
+    reset_decision_state();
+    set_rates(120, 0);
+    check("第一次达到阈值 => GO", decide(false, false), ACT_GO);
+    check("紧接着再来一次: 静默期不该生效 => GO", decide(false, false), ACT_GO);
+    g_smart_dial = true;
 
     printf("\n== 场景 D: 空闲收回 ==\n");
     g_smart_dial = true;
@@ -402,6 +412,23 @@ int main(void)
     {
         s_fail++;
         printf("  [失败] 规则文件没有生成\n");
+    }
+
+    printf("\n== 场景 Q: 重设备状态里写了非法地址时必须忽略 ==\n");
+    s_online_now = 2;
+    g_smart_dial = true;
+    g_demand_dial = true;
+    {
+        char path[160];
+        snprintf(path, sizeof(path), DEMAND_DIR "/heavy.state");
+        FILE* fp = fopen(path, "w");
+        if (fp != NULL)
+        {
+            /* 直接写坏内容: 这种值拼进 nft 规则会让整批规则被拒 */
+            fprintf(fp, "%d not-an-ip 12345\n", (int)getpid());
+            fclose(fp);
+            check_bool("非法地址被忽略 (不会带进 nft 规则)", heavy_device() == NULL, true);
+        }
     }
 
     remove_peer_state(1);

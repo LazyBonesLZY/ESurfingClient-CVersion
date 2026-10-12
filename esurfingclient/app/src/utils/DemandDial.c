@@ -67,6 +67,9 @@
 
 #define SMART_CMD_BUF 32768
 
+/* 规则下发失败后, 同样的内容多久内不再重试 (避免一直 fork nft / iptables) */
+#define DEMAND_APPLY_RETRY_MS 30000
+
 typedef struct
 {
     uint64_t ms;
@@ -854,6 +857,17 @@ static const char* heavy_device(void)
     if (n != 3) return NULL;
     if (strcmp(ip, "-") == 0) return NULL;
 
+    /**
+     * 必须是合法 IPv4: 这个值会直接拼进 nft 规则, 拼错了整批规则都会被拒,
+     * 连线路改写一起失效。存档是原子写的, 正常不会坏, 这里只是兜底。
+     */
+    struct in_addr parsed;
+    if (inet_pton(AF_INET, ip, &parsed) != 1)
+    {
+        LOG_WARN("智能多播: 重设备状态里的地址不合法 (%s), 已忽略", ip);
+        return NULL;
+    }
+
     const uint64_t now = get_cur_tm_ms();
     if (pid_alive(pid) == false) return NULL;
     if (within(now, updated, fresh_ms()) == false) return NULL;
@@ -1494,6 +1508,28 @@ static void demand_steer(const bool force)
     const bool dirty = s_steer_dirty || became_leader;
     s_steer_dirty = false;
 
+    /**
+     * 下发失败时别每秒重来一遍 (nft 与 iptables 各 fork 一次)。
+     * 同样的内容 30 秒内只再试一次; 内容变了就立刻重试。
+     */
+    static uint32_t fail_target = 0;
+    static int fail_from_n = -1;
+    static bool fail_smart = false;
+    static char fail_heavy[IP_LEN] = {0};
+    static uint64_t fail_ms = 0;
+    static bool fail_cached = false;
+
+    const uint64_t now_ms = get_cur_tm_ms();
+    if (fail_cached &&
+        (fail_target & mask) == (target & mask) &&
+        fail_from_n == from_n &&
+        fail_smart == smart_now &&
+        strcmp(fail_heavy, safe_str(heavy)) == 0 &&
+        now_ms >= fail_ms && now_ms - fail_ms < DEMAND_APPLY_RETRY_MS)
+    {
+        return;
+    }
+
     if (force == false && dirty == false && applied_n >= 0 &&
         (applied_target & mask) == (target & mask) &&
         applied_smart == smart_now &&
@@ -1522,12 +1558,21 @@ static void demand_steer(const bool force)
             LOG_WARN("按需多拨: 无法改写转发标记, 未认证的线路仍会被 mwan3 分到流量");
             warned = true;
         }
+
+        fail_cached = true;
+        fail_target = target;
+        fail_from_n = from_n;
+        fail_smart = smart_now;
+        copy_ip(fail_heavy, sizeof(fail_heavy), safe_str(heavy));
+        fail_ms = get_cur_tm_ms();
+
         flock(lock_fd, LOCK_UN);
         close(lock_fd);
         return;
     }
 
     warned = false;
+    fail_cached = false;
     if (from_n == 0)
     {
         if (applied_n > 0) LOG_INFO("按需多拨: 转发恢复由 mwan3 分配");
@@ -1630,9 +1675,15 @@ static bool held_for(uint64_t* since, const uint64_t now, const bool below, cons
     return now - *since >= need_ms;
 }
 
-/** 上一次扩容 / 收回之后还在静默期里吗 */
+/**
+ * 上一次扩容 / 收回之后还在静默期里吗
+ *
+ * 静默期是智能多播的开关 (配置项与界面都写着"仅智能多播"), 没开智能多播时不能悄悄生效:
+ * 那等于改掉了老用户原有的扩容/收回节奏。
+ */
 static bool in_hold_off(const uint64_t now)
 {
+    if (g_smart_dial == false) return false;
     if (g_smart_hold_secs == 0) return false;
     if (s_last_change_ms == 0) return false;
     if (now < s_last_change_ms) return false;
