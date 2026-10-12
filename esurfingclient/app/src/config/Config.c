@@ -32,6 +32,11 @@ static const char s_default_cfg[] = "{\n"
                                     "   \"demand_mbps\": 100,\n"
                                     "   \"demand_idle_mins\": 5,\n"
                                     "   \"demand_iface\": \"\",\n"
+                                    "   \"smart_dial\": false,\n"
+                                    "   \"demand_up_mbps\": 20,\n"
+                                    "   \"smart_conns\": 512,\n"
+                                    "   \"smart_devices\": 12,\n"
+                                    "   \"smart_hold_secs\": 60,\n"
                                     "   \"accounts\": [\n"
                                     "       {\n"
                                     "           \"username\": \"\",\n"
@@ -163,6 +168,11 @@ bool load_cfg()
     g_demand_mbps = DEFAULT_DEMAND_MBPS;
     g_demand_idle_mins = DEFAULT_DEMAND_IDLE_MINS;
     g_demand_iface[0] = '\0';
+    g_smart_dial = DEFAULT_SMART_DIAL;
+    g_demand_up_mbps = DEFAULT_DEMAND_UP_MBPS;
+    g_smart_conns = DEFAULT_SMART_CONNS;
+    g_smart_devices = DEFAULT_SMART_DEVICES;
+    g_smart_hold_secs = DEFAULT_SMART_HOLD_SECS;
     g_account_order_cnt = 0;
     memset(g_account_mark, 0, sizeof(g_account_mark));
     /**
@@ -438,6 +448,82 @@ bool load_cfg()
         {
             LOG_WARN("demand_iface 参数不正确, 改为自动统计有默认路由的网口");
         }
+    }
+
+    const cJSON* smart_dial = cJSON_GetObjectItem(cfg_json, "smart_dial");
+    if (smart_dial)
+    {
+        if (cJSON_IsBool(smart_dial))
+        {
+            g_smart_dial = cJSON_IsTrue(smart_dial);
+        }
+        else
+        {
+            LOG_WARN("smart_dial 参数不正确 (应为 true / false), 使用默认参数 (关闭)");
+        }
+    }
+
+    const cJSON* demand_up_mbps = cJSON_GetObjectItem(cfg_json, "demand_up_mbps");
+    if (demand_up_mbps)
+    {
+        if (cJSON_IsNumber(demand_up_mbps) && demand_up_mbps->valueint >= 1 && demand_up_mbps->valueint <= 10000)
+        {
+            g_demand_up_mbps = (uint32_t)demand_up_mbps->valueint;
+        }
+        else
+        {
+            LOG_WARN("demand_up_mbps 参数不正确 (应为 1 - 10000), 使用默认参数 (%d Mbps)", DEFAULT_DEMAND_UP_MBPS);
+        }
+    }
+
+    /**
+     * 连接数与在线设备数: 0 表示不看这一项
+     *
+     * 这两个阈值只在"确实有流量"时才参与判定 (见 DemandDial.c 里的 active 判断),
+     * 否则一堆设备挂着不动也会被当成"设备多, 该扩容", 那正好和按需多拨的目的相反
+     */
+    const cJSON* smart_conns = cJSON_GetObjectItem(cfg_json, "smart_conns");
+    if (smart_conns)
+    {
+        if (cJSON_IsNumber(smart_conns) && smart_conns->valueint >= 0 && smart_conns->valueint <= 1000000)
+        {
+            g_smart_conns = (uint32_t)smart_conns->valueint;
+        }
+        else
+        {
+            LOG_WARN("smart_conns 参数不正确 (应为 0 - 1000000, 0 表示不看), 使用默认参数 (%d)", DEFAULT_SMART_CONNS);
+        }
+    }
+
+    const cJSON* smart_devices = cJSON_GetObjectItem(cfg_json, "smart_devices");
+    if (smart_devices)
+    {
+        if (cJSON_IsNumber(smart_devices) && smart_devices->valueint >= 0 && smart_devices->valueint <= 1024)
+        {
+            g_smart_devices = (uint32_t)smart_devices->valueint;
+        }
+        else
+        {
+            LOG_WARN("smart_devices 参数不正确 (应为 0 - 1024, 0 表示不看), 使用默认参数 (%d)", DEFAULT_SMART_DEVICES);
+        }
+    }
+
+    const cJSON* smart_hold_secs = cJSON_GetObjectItem(cfg_json, "smart_hold_secs");
+    if (smart_hold_secs)
+    {
+        if (cJSON_IsNumber(smart_hold_secs) && smart_hold_secs->valueint >= 0 && smart_hold_secs->valueint <= 3600)
+        {
+            g_smart_hold_secs = (uint32_t)smart_hold_secs->valueint;
+        }
+        else
+        {
+            LOG_WARN("smart_hold_secs 参数不正确 (应为 0 - 3600, 0 表示不限), 使用默认参数 (%d 秒)", DEFAULT_SMART_HOLD_SECS);
+        }
+    }
+
+    if (g_smart_dial && g_demand_dial == false)
+    {
+        LOG_WARN("smart_dial 已开启但 demand_dial 没开, 智能多播不会生效 (两者都要开)");
     }
 
     const cJSON* accounts = cJSON_GetObjectItem(cfg_json, "accounts");

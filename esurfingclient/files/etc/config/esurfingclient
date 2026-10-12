@@ -10,6 +10,11 @@
   "demand_mbps": 100,
   "demand_idle_mins": 5,
   "demand_iface": "",
+  "smart_dial": false,
+  "demand_up_mbps": 20,
+  "smart_conns": 512,
+  "smart_devices": 12,
+  "smart_hold_secs": 60,
   "accounts": [
     {
       "username": "",

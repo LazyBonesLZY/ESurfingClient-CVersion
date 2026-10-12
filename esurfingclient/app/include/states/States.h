@@ -55,6 +55,16 @@
 
 #define DEFAULT_DEMAND_IDLE_MINS 5
 
+#define DEFAULT_SMART_DIAL false
+
+#define DEFAULT_DEMAND_UP_MBPS 20
+
+#define DEFAULT_SMART_CONNS 512
+
+#define DEFAULT_SMART_DEVICES 12
+
+#define DEFAULT_SMART_HOLD_SECS 60
+
 #define DEMAND_IFACE_LEN 128
 
 #define ACCOUNT_ORDER_MAX 255
@@ -207,6 +217,16 @@ extern uint32_t g_demand_mbps;
 extern uint32_t g_demand_idle_mins;
 
 extern char g_demand_iface[DEMAND_IFACE_LEN];
+
+extern bool g_smart_dial;
+
+extern uint32_t g_demand_up_mbps;
+
+extern uint32_t g_smart_conns;
+
+extern uint32_t g_smart_devices;
+
+extern uint32_t g_smart_hold_secs;
 
 extern uint8_t g_account_order[ACCOUNT_ORDER_MAX];
 

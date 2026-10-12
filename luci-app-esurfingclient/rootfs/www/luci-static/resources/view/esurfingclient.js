@@ -52,6 +52,11 @@ return view.extend({
             demand_mbps: 100,
             demand_idle_mins: 5,
             demand_iface: '',
+            smart_dial: false,
+            demand_up_mbps: 20,
+            smart_conns: 512,
+            smart_devices: 12,
+            smart_hold_secs: 60,
             accounts: []
         };
         
@@ -217,6 +222,96 @@ return view.extend({
                     }),
                     E('div', { class: 'cbi-value-description' }, '留空时统计有默认路由的网口接收流量; 要指定就填网口名, 多个用空格或逗号隔开, 例如 wan1,wan2')
                 ])
+            ]),
+            E('div', { class: 'cbi-value' }, [
+                E('label', { class: 'cbi-value-title' }, '智能多播'),
+                E('div', { class: 'cbi-value-field' }, [
+                    E('input', {
+                        type: 'checkbox',
+                        id: 'smart_dial',
+                        checked: self.config.smart_dial ? true : undefined,
+                        change: function(ev) {
+                            self.config.smart_dial = ev.target.checked;
+                        }
+                    }),
+                    E('div', { class: 'cbi-value-description' }, [
+                        '在按需多拨之上再加一层策略: 上行 / 连接数 / 设备数 也能触发扩容, 并且只让下载最猛的那台设备独占多路, 其它设备一律走第一条在线线路',
+                        E('br'),
+                        '需要同时打开"按需多拨"; 每台设备的流量统计依赖 nft (只有 iptables 的系统会退化成线路级改写)'
+                    ])
+                ])
+            ]),
+            E('div', { class: 'cbi-value' }, [
+                E('label', { class: 'cbi-value-title' }, '上行阈值'),
+                E('div', { class: 'cbi-value-field' }, [
+                    E('input', {
+                        type: 'number',
+                        id: 'demand_up_mbps',
+                        class: 'cbi-input-text',
+                        min: 1,
+                        step: 1,
+                        value: self.config.demand_up_mbps,
+                        change: function(ev) {
+                            self.config.demand_up_mbps = self.normalizeTimeout(ev.target.value, 20);
+                            ev.target.value = self.config.demand_up_mbps;
+                        }
+                    }),
+                    E('div', { class: 'cbi-value-description' }, '已有 N 个账号在线、且最近一秒峰值上行达到 N × 这个值的一半 (Mbps) 时, 再认证下一个账号 (仅智能多播)')
+                ])
+            ]),
+            E('div', { class: 'cbi-value' }, [
+                E('label', { class: 'cbi-value-title' }, '连接数阈值'),
+                E('div', { class: 'cbi-value-field' }, [
+                    E('input', {
+                        type: 'number',
+                        id: 'smart_conns',
+                        class: 'cbi-input-text',
+                        min: 0,
+                        step: 1,
+                        value: self.config.smart_conns,
+                        change: function(ev) {
+                            self.config.smart_conns = self.normalizeCount(ev.target.value, 512);
+                            ev.target.value = self.config.smart_conns;
+                        }
+                    }),
+                    E('div', { class: 'cbi-value-description' }, '连接跟踪表里的连接数达到 N × 这个值时扩容; 0 表示不看这一项。只在确实有流量时才算数 (仅智能多播)')
+                ])
+            ]),
+            E('div', { class: 'cbi-value' }, [
+                E('label', { class: 'cbi-value-title' }, '设备数阈值'),
+                E('div', { class: 'cbi-value-field' }, [
+                    E('input', {
+                        type: 'number',
+                        id: 'smart_devices',
+                        class: 'cbi-input-text',
+                        min: 0,
+                        step: 1,
+                        value: self.config.smart_devices,
+                        change: function(ev) {
+                            self.config.smart_devices = self.normalizeCount(ev.target.value, 12);
+                            ev.target.value = self.config.smart_devices;
+                        }
+                    }),
+                    E('div', { class: 'cbi-value-description' }, '局域网在线设备数达到 N × 这个值时扩容; 0 表示不看这一项。只在确实有流量时才算数 (仅智能多播)')
+                ])
+            ]),
+            E('div', { class: 'cbi-value' }, [
+                E('label', { class: 'cbi-value-title' }, '变更静默期'),
+                E('div', { class: 'cbi-value-field' }, [
+                    E('input', {
+                        type: 'number',
+                        id: 'smart_hold_secs',
+                        class: 'cbi-input-text',
+                        min: 0,
+                        step: 1,
+                        value: self.config.smart_hold_secs,
+                        change: function(ev) {
+                            self.config.smart_hold_secs = self.normalizeCount(ev.target.value, 60);
+                            ev.target.value = self.config.smart_hold_secs;
+                        }
+                    }),
+                    E('div', { class: 'cbi-value-description' }, '扩容或收回之后这段时间内不再做新的调整, 防止在阈值附近来回抖动 (单位: 秒, 0 表示不限; 仅智能多播)')
+                ])
             ])
         ]);
 
@@ -300,7 +395,7 @@ return view.extend({
             E('div', { style: 'margin-left: 25px;'}, [
                 E('p', { class: 'desc' }, '用于方便地调整 ESurfing 程序的配置文件'),
                 E('p', { class: 'desc' }, '账号密码与原电信认证程序的账号密码相同'),
-                E('p', { class: 'desc' }, 'LuCI 版本: 2.1.4-r5'),
+                E('p', { class: 'desc' }, 'LuCI 版本: 2.1.5-r1'),
                 E('p', { class: 'desc' }, '> Powered by BadGhost')
             ]),
             E('div', { class: 'cbi-section' }, [
@@ -316,6 +411,13 @@ return view.extend({
     normalizeTimeout: function(value, fallback) {
         var timeout = parseInt(value, 10);
         return (isNaN(timeout) || timeout <= 0) ? fallback : timeout;
+    },
+
+    // 允许 0 的数值 (0 表示这一项不参与智能多播判定)
+    normalizeCount: function(value, fallback) {
+        var num = parseInt(value, 10);
+        if (isNaN(num) || num < 0) return fallback;
+        return num;
     },
 
     loadConfig: function() {
@@ -337,6 +439,11 @@ return view.extend({
                 self.config.demand_mbps = self.normalizeTimeout(self.config.demand_mbps, 100);
                 self.config.demand_idle_mins = self.normalizeTimeout(self.config.demand_idle_mins, 5);
                 if (typeof self.config.demand_iface !== 'string') self.config.demand_iface = '';
+                self.config.smart_dial = !!self.config.smart_dial;
+                self.config.demand_up_mbps = self.normalizeTimeout(self.config.demand_up_mbps, 20);
+                self.config.smart_conns = self.normalizeCount(self.config.smart_conns, 512);
+                self.config.smart_devices = self.normalizeCount(self.config.smart_devices, 12);
+                self.config.smart_hold_secs = self.normalizeCount(self.config.smart_hold_secs, 60);
                 self.showNotification('读取配置文件成功', 'success');
                 return self.config;
             })
@@ -353,6 +460,11 @@ return view.extend({
                     demand_mbps: 100,
                     demand_idle_mins: 5,
                     demand_iface: '',
+                    smart_dial: false,
+                    demand_up_mbps: 20,
+                    smart_conns: 512,
+                    smart_devices: 12,
+                    smart_hold_secs: 60,
                     accounts: [
                         {
                             username: '加载失败',
@@ -916,6 +1028,11 @@ return view.extend({
                         demand_mbps: 100,
                         demand_idle_mins: 5,
                         demand_iface: '',
+                        smart_dial: false,
+                        demand_up_mbps: 20,
+                        smart_conns: 512,
+                        smart_devices: 12,
+                        smart_hold_secs: 60,
                         accounts: [
                             {
                                 username: '',

@@ -40,6 +40,11 @@ static const cfg_def_t s_cfg_defaults[] = {
     {"demand_mbps",      CFG_DEF_NUM, false, DEFAULT_DEMAND_MBPS, NULL, "Mbps"},
     {"demand_idle_mins", CFG_DEF_NUM, false, DEFAULT_DEMAND_IDLE_MINS, NULL, "分钟"},
     {"demand_iface",     CFG_DEF_STR, false, 0, "", NULL},
+    {"smart_dial",       CFG_DEF_BOOL, DEFAULT_SMART_DIAL, 0, NULL, NULL},
+    {"demand_up_mbps",   CFG_DEF_NUM, false, DEFAULT_DEMAND_UP_MBPS, NULL, "Mbps"},
+    {"smart_conns",      CFG_DEF_NUM, false, DEFAULT_SMART_CONNS, NULL, NULL},
+    {"smart_devices",    CFG_DEF_NUM, false, DEFAULT_SMART_DEVICES, NULL, NULL},
+    {"smart_hold_secs",  CFG_DEF_NUM, false, DEFAULT_SMART_HOLD_SECS, NULL, "秒"},
 };
 
 static const cfg_def_t s_account_defaults[] = {

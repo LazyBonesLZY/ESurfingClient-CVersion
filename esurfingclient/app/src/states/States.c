@@ -62,6 +62,16 @@ uint32_t g_demand_idle_mins = DEFAULT_DEMAND_IDLE_MINS;
 
 char g_demand_iface[DEMAND_IFACE_LEN] = {0};
 
+bool g_smart_dial = DEFAULT_SMART_DIAL;
+
+uint32_t g_demand_up_mbps = DEFAULT_DEMAND_UP_MBPS;
+
+uint32_t g_smart_conns = DEFAULT_SMART_CONNS;
+
+uint32_t g_smart_devices = DEFAULT_SMART_DEVICES;
+
+uint32_t g_smart_hold_secs = DEFAULT_SMART_HOLD_SECS;
+
 uint8_t g_account_order[ACCOUNT_ORDER_MAX] = {0};
 
 uint32_t g_account_mark[ACCOUNT_ORDER_MAX] = {0};
