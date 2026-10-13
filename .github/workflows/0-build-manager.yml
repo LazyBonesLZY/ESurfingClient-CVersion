@@ -1,11 +1,16 @@
-name: Build All Platforms
+name: 0 Build Manager
 
 permissions:
   actions: write
   contents: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CURL_VERSION: "8.20.0"
+  LLVM_MINGW_VERSION: "20260922"
   OPENWRT_IPK_SDK_VERSION: "24.10.8"
   OPENWRT_APK_SDK_VERSION: "25.12.5"
   TAIL_WIND_LABS_VERSION: "v4.3.0"
@@ -20,8 +25,14 @@ on:
         default: 'all'
         options:
           - all
+          - windows
+          - windows-x86
           - windows-x86_64
+          - windows-aarch64
+          - linux
           - linux-x86_64
+          - linux-aarch64
+          - linux-armv7
           - linux-loongarch64
           - macos-x86_64
           - macos-aarch64
@@ -29,8 +40,6 @@ on:
           - android-arm64-v8a
           - android-armeabi-v7a
           - android-x86_64
-          - openwrt-luci-ipk
-          - openwrt-luci-apk
           - openwrt-aarch64_cortex-a53-ipk
           - openwrt-aarch64_cortex-a53-apk
           - openwrt-aarch64_cortex-a72-ipk
@@ -101,15 +110,19 @@ on:
           - openwrt-riscv64_generic-apk
           - openwrt-x86_64-ipk
           - openwrt-x86_64-apk
+          - openwrt-luci-ipk
+          - openwrt-luci-apk
 
 jobs:
   get-version:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.version.outputs.version }}
       release: ${{ steps.version.outputs.release }}
       full_version: ${{ steps.version.outputs.full_version }}
       curl_version: ${{ env.CURL_VERSION }}
+      llvm_mingw_version: ${{ env.LLVM_MINGW_VERSION }}
       openwrt_ipk_sdk_version: ${{ env.OPENWRT_IPK_SDK_VERSION }}
       openwrt_apk_sdk_version: ${{ env.OPENWRT_APK_SDK_VERSION }}
       tail_wind_labs_version: ${{ env.TAIL_WIND_LABS_VERSION }}
@@ -117,6 +130,9 @@ jobs:
       apk_matrix: ${{ steps.matrix.outputs.apk_matrix }}
       luci_matrix: ${{ steps.luci_matrix.outputs.luci_matrix }}
       android_matrix: ${{ steps.android_matrix.outputs.android_matrix }}
+      macos_matrix: ${{ steps.macos_matrix.outputs.macos_matrix }}
+      windows_matrix: ${{ steps.windows_matrix.outputs.windows_matrix }}
+      linux_matrix: ${{ steps.linux_matrix.outputs.linux_matrix }}
     steps:
       - uses: actions/checkout@v7
 
@@ -124,8 +140,130 @@ jobs:
         id: version
         run: |
           bash scripts/sync-version.sh --print >> "$GITHUB_OUTPUT"
-          
 
+      - name: 生成 Windows 桌面端编译动态矩阵
+        id: windows_matrix
+        shell: bash
+        env:
+          INPUT: ${{ github.event.inputs.platforms }}
+        run: |
+          set -euo pipefail
+
+          ALL='[
+            {"architecture":"x86"},
+            {"architecture":"x86_64"},
+            {"architecture":"aarch64"}
+          ]'
+
+          case "$INPUT" in
+            all|windows)
+              RESULT="$ALL"
+              ;;
+            windows-*)
+              ARCH="${INPUT#windows-}"
+              RESULT=$(printf '%s' "$ALL" | jq -c --arg a "$ARCH" '[.[] | select(.architecture == $a)]')
+              ;;
+            *)
+              RESULT="[]"
+              ;;
+          esac
+
+          RESULT=$(printf '%s' "$RESULT" | jq -c .)
+          echo "windows_matrix=$RESULT" >> "$GITHUB_OUTPUT"
+          echo "Windows 矩阵: $RESULT"
+
+      - name: 生成 Linux 桌面端编译动态矩阵
+        id: linux_matrix
+        shell: bash
+        env:
+          INPUT: ${{ github.event.inputs.platforms }}
+        run: |
+          set -euo pipefail
+
+          ALL='[
+            {"architecture":"x86_64"},
+            {"architecture":"aarch64"},
+            {"architecture":"armv7"},
+            {"architecture":"loongarch64"}
+          ]'
+
+          case "$INPUT" in
+            all|linux)
+              RESULT="$ALL"
+              ;;
+            linux-*)
+              ARCH="${INPUT#linux-}"
+              RESULT=$(printf '%s' "$ALL" | jq -c --arg a "$ARCH" '[.[] | select(.architecture == $a)]')
+              ;;
+            *)
+              RESULT="[]"
+              ;;
+          esac
+
+          RESULT=$(printf '%s' "$RESULT" | jq -c .)
+          echo "linux_matrix=$RESULT" >> "$GITHUB_OUTPUT"
+          echo "Linux 矩阵: $RESULT"
+
+      - name: 生成 MacOS 编译动态矩阵
+        id: macos_matrix
+        shell: bash
+        env:
+          INPUT: ${{ github.event.inputs.platforms }}
+        run: |
+          set -euo pipefail
+
+          ALL='[
+            {"architecture":"x86_64", "tail_wind_labs_architecture":"x64",   "runs_on":"15-intel"},
+            {"architecture":"aarch64","tail_wind_labs_architecture":"arm64", "runs_on":"latest"}
+          ]'
+
+          case "$INPUT" in
+            all|macos)
+              RESULT="$ALL"
+              ;;
+            macos-*)
+              ARCH="${INPUT#macos-}"
+              RESULT=$(printf '%s' "$ALL" | jq -c --arg a "$ARCH" '[.[] | select(.architecture == $a)]')
+              ;;
+            *)
+              RESULT="[]"
+              ;;
+          esac
+
+          RESULT=$(printf '%s' "$RESULT" | jq -c .)
+          echo "macos_matrix=$RESULT" >> "$GITHUB_OUTPUT"
+          echo "MacOS 矩阵: $RESULT"
+
+      - name: 生成 Android 编译动态矩阵
+        id: android_matrix
+        shell: bash
+        env:
+          INPUT: ${{ github.event.inputs.platforms }}
+        run: |
+          set -euo pipefail
+
+          ALL='[
+            {"abi":"arm64-v8a"},
+            {"abi":"armeabi-v7a"},
+            {"abi":"x86_64"}
+          ]'
+
+          case "$INPUT" in
+            all|android)
+              RESULT="$ALL"
+              ;;
+            android-*)
+              ABI="${INPUT#android-}"
+              RESULT=$(printf '%s' "$ALL" | jq -c --arg a "$ABI" '[.[] | select(.abi == $a)]')
+              ;;
+            *)
+              RESULT="[]"
+              ;;
+          esac
+
+          RESULT=$(printf '%s' "$RESULT" | jq -c .)
+          echo "android_matrix=$RESULT" >> "$GITHUB_OUTPUT"
+          echo "Android 矩阵: $RESULT"
 
       - name: 生成 OpenWRT 主程序插件包编译动态矩阵
         id: matrix
@@ -136,41 +274,41 @@ jobs:
           set -euo pipefail
 
           ALL='[
-            {"target":"bcm27xx/bcm2710","architecture":"aarch64_cortex-a53"},
-            {"target":"bcm27xx/bcm2711","architecture":"aarch64_cortex-a72"},
-            {"target":"bcm27xx/bcm2712","architecture":"aarch64_cortex-a76"},
-            {"target":"armsr/armv8","architecture":"aarch64_generic"},
-            {"target":"bcm27xx/bcm2708","architecture":"arm_arm1176jzf-s_vfp"},
-            {"target":"at91/sam9x","architecture":"arm_arm926ej-s"},
-            {"target":"armsr/armv7","architecture":"arm_cortex-a15_neon-vfpv4"},
-            {"target":"at91/sama5","architecture":"arm_cortex-a5_vfpv4"},
-            {"target":"mediatek/mt7629","architecture":"arm_cortex-a7"},
-            {"target":"bcm27xx/bcm2709","architecture":"arm_cortex-a7_neon-vfpv4"},
-            {"target":"at91/sama7","architecture":"arm_cortex-a7_vfpv4"},
-            {"target":"omap/generic","architecture":"arm_cortex-a8_vfpv3"},
-            {"target":"bcm53xx/generic","architecture":"arm_cortex-a9"},
-            {"target":"imx/cortexa9","architecture":"arm_cortex-a9_neon"},
-            {"target":"mvebu/cortexa9","architecture":"arm_cortex-a9_vfpv3-d16"},
-            {"target":"gemini/generic","architecture":"arm_fa526"},
-            {"target":"kirkwood/generic","architecture":"arm_xscale"},
-            {"target":"ixp4xx/generic","architecture":"armeb_xscale"},
-            {"target":"x86/legacy","architecture":"i386_pentium-mmx"},
-            {"target":"x86/generic","architecture":"i386_pentium4"},
-            {"target":"loongarch64/generic","architecture":"loongarch64_generic"},
-            {"target":"malta/be64","architecture":"mips64_mips64r2"},
-            {"target":"octeon/generic","architecture":"mips64_octeonplus"},
-            {"target":"malta/le64","architecture":"mips64el_mips64r2"},
-            {"target":"ath79/generic","architecture":"mips_24kc"},
-            {"target":"bmips/bcm6318","architecture":"mips_mips32"},
-            {"target":"malta/le","architecture":"mipsel_24kc"},
-            {"target":"pistachio/generic","architecture":"mipsel_24kc_24kf"},
-            {"target":"bcm47xx/mips74k","architecture":"mipsel_74kc"},
-            {"target":"bcm47xx/generic","architecture":"mipsel_mips32"},
-            {"target":"qoriq/generic","architecture":"powerpc64_e5500"},
-            {"target":"apm821xx/nand","architecture":"powerpc_464fp"},
-            {"target":"mpc85xx/p1010","architecture":"powerpc_8548"},
-            {"target":"d1/generic","architecture":"riscv64_generic"},
-            {"target":"x86/64","architecture":"x86_64"}
+            {"target":"bcm27xx-bcm2710","architecture":"aarch64_cortex-a53"},
+            {"target":"bcm27xx-bcm2711","architecture":"aarch64_cortex-a72"},
+            {"target":"bcm27xx-bcm2712","architecture":"aarch64_cortex-a76"},
+            {"target":"armsr-armv8","architecture":"aarch64_generic"},
+            {"target":"bcm27xx-bcm2708","architecture":"arm_arm1176jzf-s_vfp"},
+            {"target":"at91-sam9x","architecture":"arm_arm926ej-s"},
+            {"target":"armsr-armv7","architecture":"arm_cortex-a15_neon-vfpv4"},
+            {"target":"at91-sama5","architecture":"arm_cortex-a5_vfpv4"},
+            {"target":"mediatek-mt7629","architecture":"arm_cortex-a7"},
+            {"target":"bcm27xx-bcm2709","architecture":"arm_cortex-a7_neon-vfpv4"},
+            {"target":"at91-sama7","architecture":"arm_cortex-a7_vfpv4"},
+            {"target":"omap-generic","architecture":"arm_cortex-a8_vfpv3"},
+            {"target":"bcm53xx-generic","architecture":"arm_cortex-a9"},
+            {"target":"imx-cortexa9","architecture":"arm_cortex-a9_neon"},
+            {"target":"mvebu-cortexa9","architecture":"arm_cortex-a9_vfpv3-d16"},
+            {"target":"gemini-generic","architecture":"arm_fa526"},
+            {"target":"kirkwood-generic","architecture":"arm_xscale"},
+            {"target":"ixp4xx-generic","architecture":"armeb_xscale"},
+            {"target":"x86-legacy","architecture":"i386_pentium-mmx"},
+            {"target":"x86-generic","architecture":"i386_pentium4"},
+            {"target":"loongarch64-generic","architecture":"loongarch64_generic"},
+            {"target":"malta-be64","architecture":"mips64_mips64r2"},
+            {"target":"octeon-generic","architecture":"mips64_octeonplus"},
+            {"target":"malta-le64","architecture":"mips64el_mips64r2"},
+            {"target":"ath79-generic","architecture":"mips_24kc"},
+            {"target":"bmips-bcm6318","architecture":"mips_mips32"},
+            {"target":"malta-le","architecture":"mipsel_24kc"},
+            {"target":"pistachio-generic","architecture":"mipsel_24kc_24kf"},
+            {"target":"bcm47xx-mips74k","architecture":"mipsel_74kc"},
+            {"target":"bcm47xx-generic","architecture":"mipsel_mips32"},
+            {"target":"qoriq-generic","architecture":"powerpc64_e5500"},
+            {"target":"apm821xx-nand","architecture":"powerpc_464fp"},
+            {"target":"mpc85xx-p1010","architecture":"powerpc_8548"},
+            {"target":"d1-generic","architecture":"riscv64_generic"},
+            {"target":"x86-64","architecture":"x86_64"}
           ]'
 
           gen() {
@@ -208,12 +346,12 @@ jobs:
           set -euo pipefail
 
           IPK_ENTRY=$(jq -nc \
-            --arg t "x86/64" \
+            --arg t "x86-64" \
             --arg s "$IPK_SDK" \
             '{target:$t, package_type:"ipk", sdk_version:$s}')
-
+          
           APK_ENTRY=$(jq -nc \
-            --arg t "x86/64" \
+            --arg t "x86-64" \
             --arg s "$APK_SDK" \
             '{target:$t, package_type:"apk", sdk_version:$s}')
 
@@ -228,87 +366,56 @@ jobs:
           echo "luci_matrix=$RESULT" >> "$GITHUB_OUTPUT"
           echo "LuCI 矩阵: $RESULT"
 
-      - name: 生成 Android 编译
-        id: android_matrix
-        shell: bash
-        env:
-          INPUT: ${{ github.event.inputs.platforms }}
-        run: |
-          set -euo pipefail
+  # Windows
+  windows:
+    if: needs.get-version.outputs.windows_matrix != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.get-version.outputs.windows_matrix) }}
+    uses: ./.github/workflows/1-build-windows-all.yml
+    secrets: inherit
+    needs: get-version
+    with:
+      full_version:           ${{ needs.get-version.outputs.full_version }}
+      curl_version:           ${{ needs.get-version.outputs.curl_version }}
+      tail_wind_labs_version: ${{ needs.get-version.outputs.tail_wind_labs_version }}
+      llvm_mingw_version:     ${{ needs.get-version.outputs.llvm_mingw_version }}
+      architecture:           ${{ matrix.architecture }}
 
-          ALL='[
-            {"abi":"arm64-v8a"},
-            {"abi":"armeabi-v7a"},
-            {"abi":"x86_64"}
-          ]'
+  # Linux
+  linux:
+    if: needs.get-version.outputs.linux_matrix != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.get-version.outputs.linux_matrix) }}
+    uses: ./.github/workflows/2-build-linux-all.yml
+    secrets: inherit
+    needs: get-version
+    with:
+      full_version:           ${{ needs.get-version.outputs.full_version }}
+      curl_version:           ${{ needs.get-version.outputs.curl_version }}
+      tail_wind_labs_version: ${{ needs.get-version.outputs.tail_wind_labs_version }}
+      architecture:           ${{ matrix.architecture }}
 
-          case "$INPUT" in
-            all|android)
-              RESULT="$ALL"
-              ;;
-            android-*)
-              ABI="${INPUT#android-}"
-              RESULT=$(printf '%s' "$ALL" | jq -c --arg a "$ABI" '[.[] | select(.abi == $a)]')
-              ;;
-            *)
-              RESULT="[]"
-              ;;
-          esac
-
-          RESULT=$(printf '%s' "$RESULT" | jq -c .)
-          echo "android_matrix=$RESULT" >> "$GITHUB_OUTPUT"
-          echo "Android 矩阵: $RESULT"
-
-  # 桌面端
-  windows-x86_64:
-    if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows-x86_64'
-    uses: ./.github/workflows/build-desktop-x86_64-windows.yml
+  # MacOS
+  macos:
+    if: needs.get-version.outputs.macos_matrix != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.get-version.outputs.macos_matrix) }}
+    uses: ./.github/workflows/3-build-macos-all.yml
     secrets: inherit
     needs: get-version
     with:
       full_version: ${{ needs.get-version.outputs.full_version }}
       curl_version: ${{ needs.get-version.outputs.curl_version }}
       tail_wind_labs_version: ${{ needs.get-version.outputs.tail_wind_labs_version }}
-
-  linux-x86_64:
-    if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'linux-x86_64'
-    uses: ./.github/workflows/build-desktop-x86_64-linux.yml
-    secrets: inherit
-    needs: get-version
-    with:
-      full_version: ${{ needs.get-version.outputs.full_version }}
-      curl_version: ${{ needs.get-version.outputs.curl_version }}
-      tail_wind_labs_version: ${{ needs.get-version.outputs.tail_wind_labs_version }}
-
-  linux-loongarch64:
-    if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'linux-loongarch64'
-    uses: ./.github/workflows/build-desktop-loongarch64-linux.yml
-    secrets: inherit
-    needs: get-version
-    with:
-      full_version: ${{ needs.get-version.outputs.full_version }}
-      curl_version: ${{ needs.get-version.outputs.curl_version }}
-      tail_wind_labs_version: ${{ needs.get-version.outputs.tail_wind_labs_version }}
-
-  macos-x86_64:
-    if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos-x86_64'
-    uses: ./.github/workflows/build-desktop-x86_64-macos.yml
-    secrets: inherit
-    needs: get-version
-    with:
-      full_version: ${{ needs.get-version.outputs.full_version }}
-      curl_version: ${{ needs.get-version.outputs.curl_version }}
-      tail_wind_labs_version: ${{ needs.get-version.outputs.tail_wind_labs_version }}
-
-  macos-aarch64:
-    if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos-aarch64'
-    uses: ./.github/workflows/build-desktop-aarch64-macos.yml
-    secrets: inherit
-    needs: get-version
-    with:
-      full_version: ${{ needs.get-version.outputs.full_version }}
-      curl_version: ${{ needs.get-version.outputs.curl_version }}
-      tail_wind_labs_version: ${{ needs.get-version.outputs.tail_wind_labs_version }}
+      tail_wind_labs_architecture: ${{ matrix.tail_wind_labs_architecture }}
+      runs_on: ${{ matrix.runs_on }}
+      architecture: ${{ matrix.architecture }}
 
   # Android
   android:
@@ -317,7 +424,7 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.get-version.outputs.android_matrix) }}
-    uses: ./.github/workflows/build-android-all.yml
+    uses: ./.github/workflows/4-build-android-all.yml
     secrets: inherit
     needs: get-version
     with:
@@ -326,23 +433,6 @@ jobs:
       tail_wind_labs_version: ${{ needs.get-version.outputs.tail_wind_labs_version }}
       abi:                    ${{ matrix.abi }}
 
-  # OpenWRT LuCI
-  openwrt-luci:
-    if: needs.get-version.outputs.luci_matrix != '[]'
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.get-version.outputs.luci_matrix) }}
-    uses: ./.github/workflows/build-openwrt-luci-packages.yml
-    secrets: inherit
-    needs: get-version
-    with:
-      version:      ${{ needs.get-version.outputs.version }}
-      release:      ${{ needs.get-version.outputs.release }}
-      sdk_version:  ${{ matrix.sdk_version }}
-      target:       ${{ matrix.target }}
-      package_type: ${{ matrix.package_type }}
-
   # OpenWRT IPK
   openwrt-packages-ipk:
     if: needs.get-version.outputs.ipk_matrix != '[]'
@@ -350,7 +440,7 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.get-version.outputs.ipk_matrix) }}
-    uses: ./.github/workflows/build-openwrt-packages.yml
+    uses: ./.github/workflows/5-build-openwrt-packages-all.yml
     secrets: inherit
     needs: get-version
     with:
@@ -368,7 +458,7 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.get-version.outputs.apk_matrix) }}
-    uses: ./.github/workflows/build-openwrt-packages.yml
+    uses: ./.github/workflows/5-build-openwrt-packages-all.yml
     secrets: inherit
     needs: get-version
     with:
@@ -379,19 +469,35 @@ jobs:
       architecture: ${{ matrix.architecture }}
       package_type: "apk"
 
+  # OpenWRT LuCI
+  openwrt-luci:
+    if: needs.get-version.outputs.luci_matrix != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.get-version.outputs.luci_matrix) }}
+    uses: ./.github/workflows/6-build-openwrt-luci-packages-all.yml
+    secrets: inherit
+    needs: get-version
+    with:
+      version:      ${{ needs.get-version.outputs.version }}
+      release:      ${{ needs.get-version.outputs.release }}
+      sdk_version:  ${{ matrix.sdk_version }}
+      target:       ${{ matrix.target }}
+      package_type: ${{ matrix.package_type }}
+
   release:
     needs:
-      - windows-x86_64
-      - linux-x86_64
-      - linux-loongarch64
-      - macos-x86_64
-      - macos-aarch64
+      - windows
+      - linux
+      - macos
       - android
-      - openwrt-luci
       - openwrt-packages-ipk
       - openwrt-packages-apk
+      - openwrt-luci
     runs-on: ubuntu-latest
-    if: always() && !cancelled() && github.event.inputs.platforms == 'all'
+    timeout-minutes: 30
+    if: always() && !cancelled()
     steps:
       - uses: actions/checkout@v7
 

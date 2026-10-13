@@ -1,4 +1,4 @@
-name: Build Android Binary
+name: 4 Build Android Binary
 
 permissions:
   contents: write
@@ -25,10 +25,12 @@ env:
   NDK_VERSION: r30
   NDK_DIR: android-ndk-r30
   ANDROID_API: 24
+  WGET_OPTS: "-t 3 --timeout=30 --waitretry=5 --retry-connrefused --retry-on-http-error=429,500,502,503,504"
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v7
@@ -49,7 +51,7 @@ jobs:
               echo "target=x86_64-linux-android" >> "$GITHUB_OUTPUT"
               ;;
             *)
-              echo "❌ 不支持的 ABI: ${{ inputs.abi }}"
+              echo "不支持的 ABI: ${{ inputs.abi }}"
               exit 1
               ;;
           esac
@@ -61,15 +63,22 @@ jobs:
           PACKAGES="build-essential cmake wget make binutils file unzip"
 
           sudo apt-get update
+          ok=0
           for i in 1 2 3; do
             echo "尝试 $i: 正在安装 $PACKAGES"
             if sudo apt-get install -y $PACKAGES; then
               echo "所有软件包已完成安装"
+              ok=1
               break
             fi
             echo "尝试 $i 失败"
             sleep 3
           done
+
+          if [ "$ok" != "1" ]; then
+            echo "::error::依赖安装连续失败 3 次"
+            exit 1
+          fi
 
       - name: 获取 Android NDK 缓存
         id: cache-ndk
@@ -82,7 +91,7 @@ jobs:
         if: steps.cache-ndk.outputs.cache-hit != 'true'
         run: |
           set -e
-          wget -q https://dl.google.com/android/repository/${NDK_DIR}-linux.zip
+          wget $WGET_OPTS -q https://dl.google.com/android/repository/${NDK_DIR}-linux.zip
           unzip -q ${NDK_DIR}-linux.zip
           rm ${NDK_DIR}-linux.zip
           ls -d ${NDK_DIR}
@@ -91,6 +100,10 @@ jobs:
         run: |
           echo "ANDROID_NDK_HOME=$GITHUB_WORKSPACE/$NDK_DIR" >> $GITHUB_ENV
           echo "TOOLCHAIN=$GITHUB_WORKSPACE/$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64" >> $GITHUB_ENV
+
+      - name: 检查工具链
+        run: |
+          $TOOLCHAIN/bin/${{ steps.abi.outputs.target }}${{ steps.abi.outputs.api }}-clang --version | head -1
 
       - name: 获取 libcurl 缓存
         id: cache-curl
@@ -112,7 +125,7 @@ jobs:
           export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
           export STRIP=$TOOLCHAIN/bin/llvm-strip
 
-          wget https://curl.se/download/curl-${{ inputs.curl_version }}.tar.gz
+          wget $WGET_OPTS https://curl.se/download/curl-${{ inputs.curl_version }}.tar.gz
           tar -xzf curl-${{ inputs.curl_version }}.tar.gz
           cd curl-${{ inputs.curl_version }}
 
@@ -205,14 +218,38 @@ jobs:
       - name: 验证
         run: |
           BIN="ESurfingClient-${{ inputs.full_version }}-android-${{ steps.abi.outputs.abi }}"
-          if [ -f "$BIN" ]; then
-            echo "✅ 构建成功"
-            echo "📏 文件大小: $(du -h "$BIN" | cut -f1)"
-            file "$BIN"
-          else
-            echo "❌ 未找到二进制文件"
+
+          if [ ! -f "$BIN" ]; then
+            echo "::error::未找到二进制文件 $BIN"
             exit 1
           fi
+
+          case "${{ steps.abi.outputs.abi }}" in
+            arm64-v8a)   EXPECTED="AArch64" ;;
+            armeabi-v7a) EXPECTED="ARM" ;;
+            x86_64)      EXPECTED="X86-64" ;;
+            *)
+              echo "::error::未知 ABI: ${{ steps.abi.outputs.abi }}"
+              exit 1
+              ;;
+          esac
+
+          MACHINE=$(readelf -h "$BIN" | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')
+
+          echo "构建成功"
+          echo "文件大小: $(du -h "$BIN" | cut -f1)"
+          file "$BIN"
+          echo "Machine: $MACHINE"
+
+          case "$MACHINE" in
+            *"$EXPECTED"*)
+              echo "架构校验通过: $MACHINE"
+              ;;
+            *)
+              echo "::error::架构不符: 期望含 $EXPECTED, 实际 $MACHINE"
+              exit 1
+              ;;
+          esac
 
       - name: 获取 web 处理缓存
         id: cache-web
@@ -224,7 +261,7 @@ jobs:
       - name: 下载 tailwind_labs 打包程序
         if: steps.cache-web.outputs.cache-hit != 'true'
         run: |
-          wget https://github.com/tailwindlabs/tailwindcss/releases/download/${{ inputs.tail_wind_labs_version }}/tailwindcss-linux-x64
+          wget $WGET_OPTS https://github.com/tailwindlabs/tailwindcss/releases/download/${{ inputs.tail_wind_labs_version }}/tailwindcss-linux-x64
           chmod +x tailwindcss-linux-x64
 
       - name: 处理 web 文件
@@ -233,8 +270,6 @@ jobs:
 
       - name: 复制配置文件到根目录
         run: |
-          # files/ 里放的是部署到设备上的名字 (etc/config/esurfingclient),
-          # 桌面端读的是程序同目录下的 ESurfingClient.json, 这里做一次改名
           cp esurfingclient/files/etc/config/esurfingclient ./ESurfingClient.json
 
       - name: 打包成 tar.gz 压缩包

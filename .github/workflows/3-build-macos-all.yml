@@ -1,8 +1,13 @@
-name: Build Desktop aarch64 macOS Binary
+name: 3 Build Desktop MacOS Binary
 
 permissions:
   contents: write
   actions: write
+
+env:
+  WGET_OPTS: "-t 3 --timeout=30 --waitretry=5 --retry-connrefused --retry-on-http-error=429,500,502,503,504"
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
 
 on:
   workflow_dispatch:
@@ -17,19 +22,27 @@ on:
       tail_wind_labs_version:
         required: true
         type: string
+      tail_wind_labs_architecture:
+        required: true
+        type: string
+      runs_on:
+        required: true
+        type: string
+      architecture:
+        required: true
+        type: string
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-${{ inputs.runs_on }}
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v7
 
       - name: 准备安装目录
         run: |
-          sudo mkdir -p /usr/local/opt/openssl-built
           sudo mkdir -p /usr/local/opt/curl-built
-          sudo chown -R $(whoami) /usr/local/opt/openssl-built
           sudo chown -R $(whoami) /usr/local/opt/curl-built
 
       - name: 安装编译工具
@@ -41,13 +54,13 @@ jobs:
         uses: actions/cache@v6
         with:
           path: /usr/local/opt/curl-built
-          key: curl-${{ inputs.curl_version }}-macos-aarch64
+          key: curl-${{ inputs.curl_version }}-macos-${{ inputs.architecture }}
 
       - name: 构建 libcurl 静态链接库
         if: steps.cache-curl.outputs.cache-hit != 'true'
         run: |
           cd /tmp
-          wget https://curl.se/download/curl-${{ inputs.curl_version }}.tar.gz
+          wget $WGET_OPTS https://curl.se/download/curl-${{ inputs.curl_version }}.tar.gz
           tar -xzf curl-${{ inputs.curl_version }}.tar.gz
           cd curl-${{ inputs.curl_version }}
 
@@ -89,8 +102,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
-            -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl-built \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
             -DCURL_INCLUDE_DIR=/usr/local/opt/curl-built/include \
             -DCURL_LIBRARY=/usr/local/opt/curl-built/lib/libcurl.a \
             -B build \
@@ -98,56 +110,77 @@ jobs:
 
           cmake --build build -j$(sysctl -n hw.logicalcpu)
 
-          cp build/ESurfingClient ../../ESurfingClient-${{ inputs.full_version }}-darwin-aarch64
+          cp build/ESurfingClient ../../ESurfingClient-${{ inputs.full_version }}-darwin-${{ inputs.architecture }}
 
-          upx --best --lzma ../../ESurfingClient-${{ inputs.full_version }}-darwin-aarch64 || true
+          BIN="../../ESurfingClient-${{ inputs.full_version }}-darwin-${{ inputs.architecture }}"
 
-          ls -lh ../../ESurfingClient-${{ inputs.full_version }}-darwin-aarch64
+          case "${{ inputs.architecture }}" in
+            x86_64)  EXPECTED="x86_64" ;;
+            aarch64) EXPECTED="arm64" ;;
+            *)
+              echo "::error::未知架构: ${{ inputs.architecture }}"
+              exit 1
+              ;;
+          esac
+
+          ARCH_INFO=$(file "$BIN")
+          echo "$ARCH_INFO"
+
+          case "$ARCH_INFO" in
+            *"$EXPECTED"*)
+              echo "架构校验通过: $EXPECTED"
+              ;;
+            *)
+              echo "::error::架构不符: 期望含 $EXPECTED, 实际 $ARCH_INFO"
+              exit 1
+              ;;
+          esac
+
+          upx --best --lzma "$BIN" || echo "::warning::upx 压缩跳过 (该架构可能不被支持)"
+
+          ls -lh "$BIN"
 
       - name: 验证
+        env:
+          BIN: ESurfingClient-${{ inputs.full_version }}-darwin-${{ inputs.architecture }}
         run: |
-          if [ -f "ESurfingClient-${{ inputs.full_version }}-darwin-aarch64" ]; then
-            echo "构建成功"
-            echo "文件大小: $(du -h ESurfingClient-${{ inputs.full_version }}-darwin-aarch64 | cut -f1)"
-            file ESurfingClient-${{ inputs.full_version }}-darwin-aarch64
-          else
-            echo "未找到二进制文件"
+          if [ ! -f "$BIN" ]; then
+            echo "::error::未找到二进制文件 $BIN"
             exit 1
           fi
+
+          echo "构建成功"
+          echo "文件大小: $(du -h "$BIN" | cut -f1)"
+          file "$BIN"
 
       - name: 获取 web 处理缓存
         id: cache-web
         uses: actions/cache@v6
         with:
-          path: tailwindcss-macos-aarch64
-          key: tailwindcss-${{ inputs.tail_wind_labs_version }}-macos-aarch64
+          path: tailwindcss-macos-${{ inputs.architecture }}
+          key: tailwindcss-${{ inputs.tail_wind_labs_version }}-macos-${{ inputs.architecture }}
 
       - name: 下载 tailwind_labs 打包程序
         if: steps.cache-web.outputs.cache-hit != 'true'
         run: |
-          wget https://github.com/tailwindlabs/tailwindcss/releases/download/${{ inputs.tail_wind_labs_version }}/tailwindcss-macos-arm64
-          
-          mv tailwindcss-macos-arm64 tailwindcss-macos-aarch64
-          
-          chmod +x tailwindcss-macos-aarch64
+          wget $WGET_OPTS -O tailwindcss-macos-${{ inputs.architecture }} https://github.com/tailwindlabs/tailwindcss/releases/download/${{ inputs.tail_wind_labs_version }}/tailwindcss-macos-${{ inputs.tail_wind_labs_architecture }}
+          chmod +x tailwindcss-macos-${{ inputs.architecture }}
 
       - name: 处理 web 文件
         run: |
-          bash scripts/build-portal.sh esurfingclient/app/portal portal ./tailwindcss-macos-aarch64
+          bash scripts/build-portal.sh esurfingclient/app/portal portal ./tailwindcss-macos-${{ inputs.architecture }}
 
       - name: 复制配置文件到根目录
         run: |
-          # files/ 里放的是部署到设备上的名字 (etc/config/esurfingclient),
-          # 桌面端读的是程序同目录下的 ESurfingClient.json, 这里做一次改名
           cp esurfingclient/files/etc/config/esurfingclient ./ESurfingClient.json
 
-      - name: 打包成 tar.gz
+      - name: 打包成 tar.gz 压缩包
         run: |
-          tar -czf esurfingclient-${{ inputs.full_version }}-darwin-aarch64.tar.gz ESurfingClient-${{ inputs.full_version }}-darwin-aarch64 ESurfingClient.json portal/
+          tar -czf esurfingclient-${{ inputs.full_version }}-darwin-${{ inputs.architecture }}.tar.gz ESurfingClient-${{ inputs.full_version }}-darwin-${{ inputs.architecture }} ESurfingClient.json portal/
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
-          name: esurfingclient-${{ inputs.full_version }}-darwin-aarch64
-          path: esurfingclient-${{ inputs.full_version }}-darwin-aarch64.tar.gz
+          name: esurfingclient-${{ inputs.full_version }}-darwin-${{ inputs.architecture }}
+          path: esurfingclient-${{ inputs.full_version }}-darwin-${{ inputs.architecture }}.tar.gz
           retention-days: 30

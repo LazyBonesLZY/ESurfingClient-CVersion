@@ -32,15 +32,15 @@
 ![Please refresh](docs/assets/1.png) ![Please refresh](docs/assets/2.png) ![Please refresh](docs/assets/3.png)
 
 > [!TIP]
-> ~~经实测, 运行十天后运行内存占用仅增加 300 kB 左右~~
+> 经实测, 运行十天后运行内存占用仅增加 28 kB 左右
 >
 > 初运行 (单进程)
 >
 > VmPeak: 912 kB, VmSize: 800 kB, VmHWM: 536 kB, VmRSS: 536 kB
 >
-> ~~十天后~~(旧数据, 新数据待测)
+> 十天后
 >
-> ~~VmHWM: 3108 kB, VmRSS: 3048 kB~~
+> VmPeak: 1088 kB, VmSize: 884 kB, VmHWM: 668 kB, VmRSS: 564 kB
 > 
 > 4 级信息级日志文件轮换后占用 1 mB 左右
 
@@ -96,7 +96,7 @@
 - 可控制日志存放路径, OpenWRT 系统默认在 /var/log/esurfing 新建 logs 目录, 非 OpenWRT 系统默认在程序目录新建 logs 目录
 - 程序运行时, logs 目录下会生成实时更新的 run.log 日志文件
 - 程序退出时, run.log 日志文件会被重命名为 <时间>.log (比如 19700101-114514.log)
-- 日志行数超过 1000 行会进行轮转操作
+- 日志行数超过 10000 行会进行轮转操作
 
 ## 广东天翼校园网 QQ 交流群 (转自 [ESurfingPy-CLI](https://github.com/Pandaft/ESurfingPy-CLI))
 

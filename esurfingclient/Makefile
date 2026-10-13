@@ -55,14 +55,9 @@ if [ -f "/etc/config/esurfingclient.apk-new" ]; then
 	echo "-> /etc/config/esurfingclient.apk-new"
 fi
 
-if [ -f "/etc/config/esurfingclient.opkg-new" ]; then
+if [ -f "/etc/config/esurfingclient-opkg" ]; then
 	echo "有新的模板文件, 可查看是否有更新"
-	echo "-> /etc/config/esurfingclient.opkg-new"
-fi
-
-if [ -f "/etc/config/esurfingclient.opkg" ]; then
-	echo "有新的模板文件, 可查看是否有更新"
-	echo "-> /etc/config/esurfingclient.opkg"
+	echo "-> /etc/config/esurfingclient-opkg"
 fi
 
 exit 0
@@ -83,7 +78,7 @@ exit 0
 endef
 
 define Package/esurfingclient/description
-轻量第三方电信校园网认证客户端 (支持 OpenWrt/Linux/Windows 多平台运行)
+	Lightweight third-party esurfingclient (Supports multi-platform operation on Windows/Linux/MacOS/OpenWrt)
 endef
 
 define Package/esurfingclient/install
