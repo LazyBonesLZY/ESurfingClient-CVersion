@@ -331,10 +331,7 @@ int work_auth()
             continue;
         }
 
-#ifdef __OPENWRT__
-        if (demand_enabled() && demand_admit() == false) continue;
-#endif
-
+        /* 下轮循环统一执行一次准入判断, 避免两次查询互相消耗静默期。 */
         LOG_INFO("配置 %" PRIu8 " 需要重新认证, 重新开始认证流程", g_prog_status[0].login_cfg.idx);
     }
 

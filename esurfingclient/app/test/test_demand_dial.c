@@ -104,7 +104,7 @@ uint8_t g_account_order_cnt = 0;
 static int s_pass = 0;
 static int s_fail = 0;
 
-static void write_peer_state(const uint8_t idx, const int state)
+static void write_peer_state_at(const uint8_t idx, const int state, const uint64_t since)
 {
     mkdir(DEMAND_DIR, 0755);
     char path[160];
@@ -115,8 +115,17 @@ static void write_peer_state(const uint8_t idx, const int state)
         fprintf(stderr, "无法写 %s\n", path);
         exit(2);
     }
-    fprintf(fp, "%d %d %llu %llu\n", (int)getpid(), state, (unsigned long long)g_test_now, (unsigned long long)g_test_now);
+    fprintf(fp, "%d %d %llu %llu\n", (int)getpid(), state, (unsigned long long)since, (unsigned long long)g_test_now);
     fclose(fp);
+}
+
+static void write_peer_state(const uint8_t idx, const int state)
+{
+    int pid = 0, previous = -1;
+    uint64_t since = 0, updated = 0;
+    if (read_peer(idx, &pid, &previous, &since, &updated) == false || previous != state)
+        since = g_test_now - 200000; /* 默认已稳定在线, 心跳刷新不改变 since */
+    write_peer_state_at(idx, state, since);
 }
 
 static void remove_peer_state(const uint8_t idx)
@@ -197,8 +206,55 @@ static void reset_decision_state(void)
     s_devs = -1;
 }
 
-int main(void)
+int main(int argc, char** argv)
 {
+    /* 网络集成测试用真实生成器, 在隔离的双 WAN 网络命名空间中运行。 */
+    if (argc >= 2 && strcmp(argv[1], "--generate-rules") == 0)
+    {
+        snprintf(g_demand_iface, sizeof(g_demand_iface), "wan1 wan2");
+        ensure_dir();
+        uint32_t offline[] = {0x200};
+        const char* heavy = argc >= 3 && strcmp(argv[2], "none") != 0 ? argv[2] : NULL;
+        return steer_apply_nft(0x100, offline, argc >= 4 ? 1 : 0, 0x3f00, heavy) ? 0 : 1;
+    }
+
+    if (argc >= 2 && strcmp(argv[1], "--test-accounting") == 0)
+    {
+        dev_rate_t devices[SMART_ACCT_MAX];
+        int count = 0;
+        if (acct_read(devices, &count) == false) return 1;
+        for (int i = 0; i < count; i++)
+        {
+            if (strcmp(devices[i].ip, "192.168.9.10") == 0 && devices[i].bytes > 0)
+            {
+                printf("PASS nft JSON -> IPv4 device download bytes: %" PRIu64 "\n", devices[i].bytes);
+                return 0;
+            }
+        }
+        return 1;
+    }
+    if (argc >= 2 && strcmp(argv[1], "--test-recovery") == 0)
+    {
+        snprintf(g_demand_iface, sizeof(g_demand_iface), "wan1 wan2");
+        g_account_order_cnt = 2;
+        g_account_order[0] = 1; g_account_order[1] = 2;
+        g_account_mark[0] = 0x100; g_account_mark[1] = 0x200;
+        g_prog_account = 1;
+        s_state = DEMAND_ONLINE;
+        write_peer_state(2, DEMAND_STANDBY);
+        demand_steer(true);
+        char* del[] = {(char*)nft_tool(), "delete", "table", "ip", "esurf_demand", NULL};
+        if (run_exec(del) != 0) return 1;
+        g_test_now += DEMAND_REFRESH_MS;
+        write_peer_state(2, DEMAND_STANDBY);
+        demand_steer(false);
+        char* list[] = {(char*)nft_tool(), "list", "table", "ip", "esurf_demand", NULL};
+        const int result = run_exec(list);
+        demand_clear();
+        remove_peer_state(2);
+        return result;
+    }
+
     /* 两个账号: 配置 1 (排位 0, mark 0x100) 在线, 本进程是配置 2 (排位 1, mark 0x200) */
     g_account_order_cnt = 2;
     g_account_order[0] = 1;
@@ -229,7 +285,9 @@ int main(void)
     reset_decision_state();
     set_rates(120, 0);
     check("第一次达到阈值 => GO", decide(false, false), ACT_GO);
-    check("静默期内不下发第二次扩容 => HOLD", decide(false, false), ACT_HOLD);
+    check("重复准入查询不消耗静默期 => GO", decide(false, false), ACT_GO);
+    s_last_change_ms = g_test_now; /* 实际状态转换的时刻 */
+    check("实际转换后的静默期 => HOLD", decide(false, false), ACT_HOLD);
     advance(61000, 120, 0);
     check("静默期过后可以再扩容 => GO", decide(false, false), ACT_GO);
 
@@ -239,6 +297,7 @@ int main(void)
     reset_decision_state();
     set_rates(120, 0);
     check("第一次达到阈值 => GO", decide(false, false), ACT_GO);
+    s_last_change_ms = g_test_now;
     check("紧接着再来一次: 静默期不该生效 => GO", decide(false, false), ACT_GO);
     g_smart_dial = true;
 
@@ -394,6 +453,11 @@ int main(void)
     g_demand_dial = true;
     uint32_t from[2] = {0x200, 0x300};
     const bool ok = steer_apply_nft(0x100, from, 2, 0x3f00, "192.168.1.66");
+    if (getenv("DEMAND_TEST_REQUIRE_NFT") != NULL)
+    {
+        check_bool("隔离内核中真实 nft 下发成功", ok, true);
+        check_bool("重复下发幂等, 第二次成功", steer_apply_nft(0x100, from, 2, 0x3f00, "192.168.1.66"), true);
+    }
     char src[160];
     snprintf(src, sizeof(src), DEMAND_DIR "/steer.nft");
     FILE* in = fopen(src, "r");
@@ -425,14 +489,119 @@ int main(void)
         if (fp != NULL)
         {
             /* 直接写坏内容: 这种值拼进 nft 规则会让整批规则被拒 */
-            fprintf(fp, "%d not-an-ip 12345\n", (int)getpid());
+            fprintf(fp, "%d not-an-ip %" PRIu64 "\n", (int)getpid(), g_test_now);
             fclose(fp);
             check_bool("非法地址被忽略 (不会带进 nft 规则)", heavy_device() == NULL, true);
         }
     }
 
+    printf("\n== 场景 R: 跨进程静默期, 心跳不重置状态转换时间 ==\n");
+    g_prog_account = 3;
+    g_account_order_cnt = 3;
+    g_account_order[2] = 3;
+    g_account_mark[2] = 0x300;
+    reset_decision_state();
+    write_peer_state(1, DEMAND_ONLINE);
+    write_peer_state_at(2, DEMAND_ONLINE, g_test_now);
+    set_rates(150, 0);
+    check("第二条刚上线, 第三条等待静默期", decide(false, false), ACT_HOLD);
+    advance(61000, 150, 0);
+    check("心跳刷新但 since 不变, 静默期结束后准入", decide(false, false), ACT_GO);
+    check("重复准入仍然 GO", decide(false, false), ACT_GO);
+
+    printf("\n== 场景 S: 按尾线顺序收回, 不同时登出多条 ==\n");
+    g_prog_account = 2;
+    write_peer_state(3, DEMAND_ONLINE);
+    reset_decision_state();
+    set_rates(0, 0);
+    check("第三条还在线, 第二条保持", decide(true, false), ACT_HOLD);
+    advance(5 * 60000, 0, 0);
+    write_peer_state(3, DEMAND_ONLINE);
+    check("低负载持续五分钟也不越过尾线退网", decide(true, false), ACT_HOLD);
+    write_peer_state_at(3, DEMAND_STANDBY, g_test_now);
+    check("尾线退网后遵守共享静默期", decide(true, false), ACT_HOLD);
+    advance(61000, 0, 0);
+    write_peer_state(3, DEMAND_STANDBY);
+    check("静默期后重新开始本账号空闲计时", decide(true, false), ACT_HOLD);
+    advance(5 * 60000, 0, 0);
+    write_peer_state(3, DEMAND_STANDBY);
+    check("本账号独立空闲满五分钟才收回", decide(true, false), ACT_STOP);
+
+    printf("\n== 场景 T: 采样缺失/过期不得解释成零流量 ==\n");
+    remove_peer_state(3);
+    g_account_order_cnt = 2;
+    reset_decision_state();
+    set_rates(0, 0);
+    check("正常零流量开始计时", decide(true, false), ACT_HOLD);
+    advance(5 * 60000, 0, 0);
+    s_count = 0;
+    check("采样缺失保持在线并复位空闲计时", decide(true, false), ACT_HOLD);
+    check_bool("缺失后空闲计时已复位", s_low_since == 0, true);
+    set_rates(0, 0);
+    check("采样恢复重新开始计时", decide(true, false), ACT_HOLD);
+    g_test_now += 31000;
+    write_peer_state(1, DEMAND_ONLINE);
+    check("过期采样也保持在线", decide(true, false), ACT_HOLD);
+
+    printf("\n== 场景 U: nft 标记规则保留已有会话 ==\n");
+    {
+        char path[160], rules[8192];
+        snprintf(path, sizeof(path), DEMAND_DIR "/steer.nft");
+        FILE* fp = fopen(path, "r");
+        size_t used = fp ? fread(rules, 1, sizeof(rules) - 1, fp) : 0;
+        if (fp) fclose(fp);
+        rules[used] = '\0';
+        check_bool("独占只作用于原始方向的新连接", strstr(rules, "ct state new ct direction original") != NULL, true);
+        check_bool("重写结果保存到 conntrack mark", strstr(rules, "ct mark set ct mark and") != NULL, true);
+        check_bool("已确认但未收到回复的会话也保留NAT路径", strstr(rules, "ct status and confirmed == 0") != NULL, true);
+    }
+
+    printf("\n== 场景 X: 重设备确认、换人和取消迟滞 ==\n");
+    {
+        dev_rate_t devices[2] = {{"192.168.9.10", 0, 0}, {"192.168.9.66", 0, 0}};
+        s_heavy[0] = '\0'; s_heavy_cand[0] = '\0';
+        s_heavy_cand_n = 0; s_heavy_idle_n = 0;
+        devices[0].bps = 120ULL * 1000000 / 8;
+        heavy_update(devices, 2);
+        check_bool("一次采样不立刻开启独占", s_heavy[0] == '\0', true);
+        heavy_update(devices, 2);
+        check_bool("两次同IP达到阈值才确认", strcmp(s_heavy, "192.168.9.10") == 0, true);
+        devices[1].bps = 150ULL * 1000000 / 8;
+        heavy_update(devices, 2); heavy_update(devices, 2);
+        check_bool("候选不到当前1.5倍不换人", strcmp(s_heavy, "192.168.9.10") == 0, true);
+        devices[1].bps = 190ULL * 1000000 / 8;
+        heavy_update(devices, 2);
+        check_bool("新候选也要连续确认", strcmp(s_heavy, "192.168.9.10") == 0, true);
+        heavy_update(devices, 2);
+        check_bool("连续两次1.5倍后换人", strcmp(s_heavy, "192.168.9.66") == 0, true);
+        devices[0].bps = 0; devices[1].bps = 0;
+        heavy_update(devices, 2); heavy_update(devices, 2);
+        check_bool("两次低负载不取消独占", s_heavy[0] != '\0', true);
+        heavy_update(devices, 2);
+        check_bool("连续三次回落才取消", s_heavy[0] == '\0', true);
+    }
+
+    printf("\n== 场景 W: 统计接口集合变化要重新建立字节基准 ==\n");
+    {
+        char names[2][DEMAND_IFACE_NAME] = {"wan1", "wan2"};
+        snprintf(s_iface_logged, sizeof(s_iface_logged), "wan1");
+        set_rates(100, 0);
+        log_ifaces(names, 2);
+        check_bool("新增网口时清空旧速率窗口", s_count == 0, true);
+        set_rates(100, 0);
+        log_ifaces(names, 2);
+        check_bool("网口没变不会清空窗口", s_count == 2, true);
+    }
+
+    printf("\n== 场景 V: 校时回拨不使空闲计时无符号下溢 ==\n");
+    {
+        uint64_t since = g_test_now;
+        check_bool("时钟回拨时重新计时, 不立即收线", held_for(&since, g_test_now - 1000, true, 30000), false);
+    }
+
     remove_peer_state(1);
     remove_peer_state(2);
+    remove_peer_state(3);
     demand_clear();
 
     printf("\n结果: 通过 %d 项, 失败 %d 项\n", s_pass, s_fail);

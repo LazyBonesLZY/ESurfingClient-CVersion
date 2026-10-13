@@ -70,6 +70,9 @@
 /* 规则下发失败后, 同样的内容多久内不再重试 (避免一直 fork nft / iptables) */
 #define DEMAND_APPLY_RETRY_MS 30000
 
+/* 即使只剩一条线、不开每设备采样, 也定期补全规则并刷新 LAN 网段。 */
+#define DEMAND_REFRESH_MS 30000
+
 typedef struct
 {
     uint64_t ms;
@@ -228,6 +231,12 @@ void demand_publish(const demand_state_t state)
     const uint64_t now = get_cur_tm_ms();
     if ((int)state != s_state)
     {
+        /* 静默期从实际状态转换开始, 准入/收回查询本身不消耗它。 */
+        if (s_state >= 0 && (s_state == DEMAND_AUTH || s_state == DEMAND_ONLINE ||
+                            state == DEMAND_AUTH || state == DEMAND_ONLINE))
+        {
+            s_last_change_ms = now;
+        }
         s_state = (int)state;
         s_since = now;
         s_low_since = 0;
@@ -291,8 +300,9 @@ void demand_banner(void)
     LOG_INFO("智能多播已开启: 上行阈值 %" PRIu32 " Mbps, 连接数阈值 %" PRIu32
              " (0=不看), 设备数阈值 %" PRIu32 " (0=不看), 变更静默期 %" PRIu32 " 秒",
         g_demand_up_mbps, g_smart_conns, g_smart_devices, g_smart_hold_secs);
-    LOG_INFO("智能多播: 只有下行最猛 (≥ %" PRIu32 " Mbps) 的那台设备独占多路, 其余设备走第一条在线线路",
+    LOG_INFO("智能多播: 只有下行最猛 (≥ %" PRIu32 " Mbps) 的那台设备独占多路, 其余设备的新连接走第一条在线线路",
         g_demand_mbps);
+    LOG_INFO("智能多播部署检查: mwan3 下载规则关闭 sticky、均衡成员同 metric, 流量卸载关闭或排除受管理流量; 当前仅管理 IPv4");
 }
 
 static bool add_iface(char names[][DEMAND_IFACE_NAME], int* count, const char* name)
@@ -368,6 +378,9 @@ static void log_ifaces(char names[][DEMAND_IFACE_NAME], const int count)
     }
 
     if (strcmp(joined, s_iface_logged) == 0) return;
+    /* 网口集合变化会改变累计值基准, 不能把新接口的历史字节当成瞬时流量。 */
+    s_count = 0;
+    s_steer_dirty = true;
     snprintf(s_iface_logged, sizeof(s_iface_logged), "%s", joined);
 
     if (count == 0)
@@ -435,7 +448,7 @@ static bool read_netdev(uint64_t* rx_out, uint64_t* tx_out)
     }
     fclose(fp);
 
-    if (matched == 0) return false;
+    if (matched != count) return false;
     *rx_out = rx_sum;
     *tx_out = tx_sum;
     return true;
@@ -595,8 +608,9 @@ static int run_exec(char* const argv[])
     }
 
     int status = 0;
-    if (waitpid(pid, &status, 0) < 0) return -1;
-    if (WIFEXITED(status) == false) return -1;
+    pid_t waited;
+    do { waited = waitpid(pid, &status, 0); } while (waited < 0 && errno == EINTR);
+    if (waited < 0 || WIFEXITED(status) == false) return -1;
     return WEXITSTATUS(status);
 }
 
@@ -651,10 +665,9 @@ static int run_capture(char* const argv[], char* out, const size_t out_len)
     close(fds[0]);
 
     int status = 0;
-    while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
-    {
-    }
-    if (WIFEXITED(status) == false) return -1;
+    pid_t waited;
+    do { waited = waitpid(pid, &status, 0); } while (waited < 0 && errno == EINTR);
+    if (waited < 0 || WIFEXITED(status) == false) return -1;
     return WEXITSTATUS(status);
 }
 
@@ -695,16 +708,6 @@ static uint32_t mwan_mask(void)
     }
     fclose(fp);
     return mask;
-}
-
-static void flush_conntrack(void)
-{
-    FILE* fp = fopen("/proc/net/nf_conntrack", "w");
-    if (fp == NULL) return;
-
-    fputc('f', fp);
-    fclose(fp);
-    LOG_INFO("按需多拨: 已清掉连接跟踪, 连接会按当前在线线路重新建立");
 }
 
 static bool pid_alive(const int pid)
@@ -1152,9 +1155,12 @@ static void demand_sample(void)
     {
         if (s_rx_warned == false)
         {
-            LOG_WARN("按需多拨读不到网口收发字节, 上下行按 0 计, 不会扩容");
+            LOG_WARN("按需多拨读不到网口收发字节, 暂停负载扩容与空闲收回, 保持现有线路");
             s_rx_warned = true;
         }
+        s_count = 0;
+        s_conns = -1;
+        s_devs = -1;
         return;
     }
     s_rx_warned = false;
@@ -1245,6 +1251,15 @@ static uint64_t peak_bps(const uint64_t now, const rate_dir_t dir)
     return peak;
 }
 
+/** 统计缺失/过期不是空闲, 不能据此下线。 */
+static bool rates_valid(const uint64_t now)
+{
+    if (s_count < 2) return false;
+    const demand_sample_t* newest = &s_samples[s_count - 1];
+    const demand_sample_t* previous = &s_samples[s_count - 2];
+    return newest->ms > previous->ms && within(now, newest->ms, 30000);
+}
+
 /** 平均速率 (收回判定用) */
 static void current_rates(const uint64_t now, uint64_t* down, uint64_t* up)
 {
@@ -1277,7 +1292,7 @@ static bool marks_equal(const uint32_t* a, const int a_n, const uint32_t* b, con
  * @brief 用 nft 下发转发规则
  *
  * 整个文件是一次 nft 事务, 所以规则是"整套换掉"而不是先删后加:
- * 中间没有"规则不在"的窗口, 换规则不会让转发流量丢包。
+ * 消除"规则不在"的窗口; 已有 NAT 会话保持出口, 不承诺线路退网无损。
  *
  * 规则分三部分:
  * 1) 每设备流量计数 (智能多播): 局域网 <-> 外网的转发按设备累计字节
@@ -1353,8 +1368,10 @@ static bool steer_apply_nft(const uint32_t target, const uint32_t* from, const i
             fprintf(fp,
                 "add rule ip esurf_demand prerouting"
                 " meta mark and 0x%" PRIx32 " == 0x%" PRIx32
-                " meta mark set meta mark and 0x%" PRIx32 " or 0x%" PRIx32 "\n",
-                mask, from[i] & mask, keep, target & mask);
+                " ct state new ct direction original ct status and confirmed == 0"
+                " meta mark set meta mark and 0x%" PRIx32 " or 0x%" PRIx32
+                " ct mark set ct mark and 0x%" PRIx32 " or 0x%" PRIx32 "\n",
+                mask, from[i] & mask, keep, target & mask, keep, target & mask);
         }
     }
 
@@ -1363,6 +1380,7 @@ static bool steer_apply_nft(const uint32_t target, const uint32_t* from, const i
      * - 只动"局域网 -> 外网"的包 (ip daddr != @lan_nets), 内网互访不受影响
      * - 不碰 OUTPUT: 认证进程自己发的包在 output 链上, 待机账号还能继续认证
      * - 只有在线线路 >= 2 条时调用方才传 heavy 进来
+     * - 只在新会话首次确认前选路, 保存最终 ct mark; 保留已有 NAT 映射和其它标记位
      */
     if (g_smart_dial && g_demand_dial && heavy != NULL && heavy[0] != '\0' && net_n > 0)
     {
@@ -1370,8 +1388,10 @@ static bool steer_apply_nft(const uint32_t target, const uint32_t* from, const i
         fprintf(fp,
             "add rule ip esurf_demand prerouting"
             " ip saddr @" SMART_ACCT_SET_LAN " ip saddr != %s ip daddr != @" SMART_ACCT_SET_LAN
-            " meta mark set meta mark and 0x%" PRIx32 " or 0x%" PRIx32 "\n",
-            heavy, keep, target & mask);
+            " ct state new ct direction original ct status and confirmed == 0"
+            " meta mark set meta mark and 0x%" PRIx32 " or 0x%" PRIx32
+            " ct mark set ct mark and 0x%" PRIx32 " or 0x%" PRIx32 "\n",
+            heavy, keep, target & mask, keep, target & mask);
     }
 
     if (fclose(fp) != 0) return false;
@@ -1405,9 +1425,20 @@ static bool steer_apply_iptables(const uint32_t target, const uint32_t* from, co
         snprintf(xmark, sizeof(xmark), "0x%" PRIx32 "/0x%" PRIx32, target & mask, mask);
         char* add_argv[] = {
             (char*)iptables, "-t", "mangle", "-A", "esurf_demand",
-            "-m", "mark", "--mark", mark, "-j", "MARK", "--set-xmark", xmark, NULL
+            "-m", "mark", "--mark", mark,
+            "-m", "conntrack", "--ctstate", "NEW", "--ctdir", "ORIGINAL", "!", "--ctstatus", "CONFIRMED",
+            "-j", "MARK", "--set-xmark", xmark, NULL
         };
         if (run_exec(add_argv) != 0) return false;
+        char mask_text[32];
+        snprintf(mask_text, sizeof(mask_text), "0x%" PRIx32, mask);
+        char* save_argv[] = {
+            (char*)iptables, "-t", "mangle", "-A", "esurf_demand",
+            "-m", "mark", "--mark", xmark,
+            "-m", "conntrack", "--ctstate", "NEW", "--ctdir", "ORIGINAL", "!", "--ctstatus", "CONFIRMED",
+            "-j", "CONNMARK", "--save-mark", "--nfmask", mask_text, "--ctmask", mask_text, NULL
+        };
+        if (run_exec(save_argv) != 0) return false;
     }
 
     char* jump_argv[] = {(char*)iptables, "-t", "mangle", "-A", "PREROUTING", "-j", "esurf_demand", NULL};
@@ -1451,6 +1482,7 @@ static void demand_steer(const bool force)
     static char applied_heavy[IP_LEN] = {0};
     static bool applied_smart = false;
     static bool applied_leader = false;
+    static uint64_t applied_ms = 0;
     static bool warned = false;
 
     if (steer_is_leader() == false)
@@ -1514,6 +1546,7 @@ static void demand_steer(const bool force)
      */
     static uint32_t fail_target = 0;
     static int fail_from_n = -1;
+    static uint32_t fail_from[ACCOUNT_ORDER_MAX];
     static bool fail_smart = false;
     static char fail_heavy[IP_LEN] = {0};
     static uint64_t fail_ms = 0;
@@ -1522,7 +1555,7 @@ static void demand_steer(const bool force)
     const uint64_t now_ms = get_cur_tm_ms();
     if (fail_cached &&
         (fail_target & mask) == (target & mask) &&
-        fail_from_n == from_n &&
+        marks_equal(fail_from, fail_from_n, from, from_n, mask) &&
         fail_smart == smart_now &&
         strcmp(fail_heavy, safe_str(heavy)) == 0 &&
         now_ms >= fail_ms && now_ms - fail_ms < DEMAND_APPLY_RETRY_MS)
@@ -1530,7 +1563,9 @@ static void demand_steer(const bool force)
         return;
     }
 
-    if (force == false && dirty == false && applied_n >= 0 &&
+    const bool refresh = applied_n >= 0 &&
+        (now_ms < applied_ms || now_ms - applied_ms >= DEMAND_REFRESH_MS);
+    if (force == false && dirty == false && refresh == false && applied_n >= 0 &&
         (applied_target & mask) == (target & mask) &&
         applied_smart == smart_now &&
         strcmp(applied_heavy, safe_str(heavy)) == 0 &&
@@ -1548,7 +1583,15 @@ static void demand_steer(const bool force)
         return;
     }
 
-    const bool grew = applied_n >= 0 && from_n != applied_n;
+    /* 获锁后再确认资格: 等锁期间更靠前的进程可能已经恢复。 */
+    if (steer_is_leader() == false)
+    {
+        applied_leader = false;
+        flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        return;
+    }
+
     const bool ok = steer_apply_nft(target, from, from_n, mask, heavy) ||
                     steer_apply_iptables(target, from, from_n, mask);
     if (ok == false)
@@ -1562,6 +1605,7 @@ static void demand_steer(const bool force)
         fail_cached = true;
         fail_target = target;
         fail_from_n = from_n;
+        for (int i = 0; i < from_n; i++) fail_from[i] = from[i];
         fail_smart = smart_now;
         copy_ip(fail_heavy, sizeof(fail_heavy), safe_str(heavy));
         fail_ms = get_cur_tm_ms();
@@ -1573,13 +1617,16 @@ static void demand_steer(const bool force)
 
     warned = false;
     fail_cached = false;
+    const bool changed = applied_n < 0 ||
+        (applied_target & mask) != (target & mask) ||
+        marks_equal(applied_from, applied_n, from, from_n, mask) == false;
     if (from_n == 0)
     {
-        if (applied_n > 0) LOG_INFO("按需多拨: 转发恢复由 mwan3 分配");
+        if (applied_n > 0) LOG_INFO("按需多拨: 新连接恢复由 mwan3 分配");
     }
-    else
+    else if (changed)
     {
-        LOG_INFO("按需多拨: 未认证线路的转发改走到标记 0x%" PRIx32, target);
+        LOG_INFO("按需多拨: 未认证线路的新连接改走到标记 0x%" PRIx32, target);
     }
 
     if (heavy != NULL && heavy[0] != '\0')
@@ -1594,18 +1641,14 @@ static void demand_steer(const bool force)
         LOG_INFO("智能多播: 取消设备级多路独占, 转发交给 mwan3 分配");
     }
 
+    applied_ms = get_cur_tm_ms();
     applied_target = target;
     applied_n = from_n;
     applied_smart = smart_now;
     copy_ip(applied_heavy, sizeof(applied_heavy), safe_str(heavy));
     for (int i = 0; i < from_n; i++) applied_from[i] = from[i];
 
-    /**
-     * 在线线路的集合一变就清一次连接跟踪: 新线路拨上时, 已经粘在旧线路上的连接得重连
-     * 才会分到新线; 有线路下线时, 那些还指着它的连接也得重来。设备级独占的增删不在这里,
-     * 刻意不清, 免得把正在跑的连接打断。
-     */
-    if (grew) flush_conntrack();
+    /* 不全表清理 conntrack: 扩容只分配新连接, 保留其它线路的 NAT 与会话。 */
 
     flock(lock_fd, LOCK_UN);
     close(lock_fd);
@@ -1671,7 +1714,7 @@ static bool held_for(uint64_t* since, const uint64_t now, const bool below, cons
         *since = 0;
         return false;
     }
-    if (*since == 0) *since = now;
+    if (*since == 0 || *since > now) *since = now;
     return now - *since >= need_ms;
 }
 
@@ -1685,9 +1728,23 @@ static bool in_hold_off(const uint64_t now)
 {
     if (g_smart_dial == false) return false;
     if (g_smart_hold_secs == 0) return false;
-    if (s_last_change_ms == 0) return false;
-    if (now < s_last_change_ms) return false;
-    return now - s_last_change_ms < (uint64_t)g_smart_hold_secs * 1000ULL;
+    const uint64_t window = (uint64_t)g_smart_hold_secs * 1000ULL;
+    if (s_last_change_ms != 0 && within(now, s_last_change_ms, window)) return true;
+
+    /* 每个账号是独立进程, 不能只看本地时钟。共享状态的 since 是实际转换时间。 */
+    for (int i = 0; i < g_account_order_cnt; i++)
+    {
+        if (g_account_order[i] == g_prog_account) continue;
+        int pid = 0;
+        int state = -1;
+        uint64_t since = 0;
+        uint64_t updated = 0;
+        if (read_peer(g_account_order[i], &pid, &state, &since, &updated) == false) continue;
+        if (pid_alive(pid) == false || within(now, updated, fresh_ms()) == false) continue;
+        if (state < DEMAND_OFF || state > DEMAND_ONLINE) continue;
+        if (since != 0 && within(now, since, window)) return true;
+    }
+    return false;
 }
 
 /**
@@ -1772,8 +1829,30 @@ static demand_act_t decide(const bool online, const bool authing)
         return ACT_GO;
     }
 
+    if (rates_valid(now) == false)
+    {
+        s_low_since = 0;
+        s_auth_low_since = 0;
+        return authing && blocking > 0 ? ACT_STOP : ACT_HOLD;
+    }
+
     if (online)
     {
+        /* 从尾部一次退一条。尾线尚在时不累计本账号的空闲倒计时。 */
+        for (int i = my + 1; i < g_account_order_cnt; i++)
+        {
+            int pid = 0;
+            int state = -1;
+            uint64_t since = 0;
+            uint64_t updated = 0;
+            if (read_peer(g_account_order[i], &pid, &state, &since, &updated) == false) continue;
+            if (pid_alive(pid) == false || within(now, updated, fresh_ms()) == false) continue;
+            if (state == DEMAND_ONLINE || state == DEMAND_AUTH)
+            {
+                s_low_since = 0;
+                return ACT_HOLD;
+            }
+        }
         if (ahead == 0)
         {
             s_low_since = 0;
@@ -1786,7 +1865,6 @@ static demand_act_t decide(const bool online, const bool authing)
         }
         if (held_for(&s_low_since, now, low, (uint64_t)g_demand_idle_mins * 60000ULL))
         {
-            s_last_change_ms = now;
             return ACT_STOP;
         }
         return ACT_HOLD;
@@ -1797,7 +1875,6 @@ static demand_act_t decide(const bool online, const bool authing)
         if (blocking > 0) return ACT_STOP;
         if (held_for(&s_auth_low_since, now, low, DEMAND_AUTH_ABORT_MS))
         {
-            s_last_change_ms = now;
             return ACT_STOP;
         }
         return ACT_HOLD;
@@ -1805,7 +1882,6 @@ static demand_act_t decide(const bool online, const bool authing)
 
     if (blocking == 0 && ahead > 0 && high && in_hold_off(now) == false)
     {
-        s_last_change_ms = now;
         return ACT_GO;
     }
     return ACT_HOLD;
