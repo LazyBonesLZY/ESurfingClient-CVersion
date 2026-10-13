@@ -100,6 +100,45 @@ static RunStatus run()
         }
         else
         {
+            /**
+             * 多账号场景 (智能多播): 探测 OK 只说明探测包走得通 —— 可能是
+             * 本线路的残留会话在撑, 也可能是门户对这个探测地址放行。
+             * 它不代表本账号在线: 本账号没有会话时, mwan3 分到本线路标记的
+             * 流量仍会被门户劫持, 设备端表现为反复弹出"需要认证"。
+             * 所以这里必须继续把会话建起来, 而不是空转打日志。
+             */
+            if (demand_enabled())
+            {
+                retry_timeout = 1;
+                LOG_INFO("已连接至互联网, 但本账号尚无会话, 继续认证");
+                if (g_prog_status[tl_thread_idx].runtime_status.is_initialized)
+                {
+                    reset();
+                    g_prog_status[tl_thread_idx].runtime_status.is_running = true;
+                }
+                if (auth() != AUTH_SUCCESS)
+                {
+                    if (g_prog_status[tl_thread_idx].runtime_status.is_running == false)
+                    {
+                        return RUN_FAILED;
+                    }
+                    if (retry_auth > 5)
+                    {
+                        LOG_FATAL("超过最多重试次数, 请检查账号密码是否正确");
+                        return RUN_FAILED;
+                    }
+                    retry_auth_time = 60000 * table[retry_auth - 1];
+                    LOG_ERROR("配置 %" PRIu8 " 认证失败, 下标 %" PRIu8 ", 重试: 第 %" PRIu8 " 次, 最多 5 次, 下一次重试时间: %" PRIu64 " 毫秒 (% " PRIu64 " 秒) 后",
+                        g_prog_status[tl_thread_idx].login_cfg.idx,
+                        tl_thread_idx,
+                        retry_auth,
+                        retry_auth_time,
+                        retry_auth_time / 1000);
+                    retry_auth++;
+                    sleep_ms(retry_auth_time, true);
+                }
+                return RUN_SUCCESS;
+            }
             LOG_INFO("已连接至互联网");
         }
         sleep_ms(1000, false);
