@@ -48,7 +48,6 @@ return view.extend({
             conn_timeout: 3,
             op_timeout: 5,
             web_port: 8888,
-            demand_dial: false,
             demand_mbps: 100,
             demand_idle_mins: 5,
             demand_iface: '',
@@ -57,6 +56,7 @@ return view.extend({
             smart_conns: 512,
             smart_devices: 12,
             smart_hold_secs: 60,
+            auth_stagger_ms: 15000,
             accounts: []
         };
         
@@ -158,17 +158,21 @@ return view.extend({
                 ])
             ]),
             E('div', { class: 'cbi-value' }, [
-                E('label', { class: 'cbi-value-title' }, '按需多拨'),
+                E('label', { class: 'cbi-value-title' }, '智能多播'),
                 E('div', { class: 'cbi-value-field' }, [
                     E('input', {
                         type: 'checkbox',
-                        id: 'demand_dial',
-                        checked: self.config.demand_dial ? true : undefined,
+                        id: 'smart_dial',
+                        checked: self.config.smart_dial ? true : undefined,
                         change: function(ev) {
-                            self.config.demand_dial = ev.target.checked;
+                            self.config.smart_dial = ev.target.checked;
                         }
                     }),
-                    E('div', { class: 'cbi-value-description' }, '平时只认证排在最前的账号, 下载量大时再逐个认证后面的账号。进程仍然每个账号一个, 待机的账号不占用在线名额')
+                    E('div', { class: 'cbi-value-description' }, [
+                        '平时只认证排在最前的账号; 下行 / 上行 / 连接数 / 设备数 任一项到线时再逐个认证后面的账号, 空闲时按尾线顺序逐条收回。只有下载最猛的那台设备独占多路, 其它设备走第一条在线线路',
+                        E('br'),
+                        '需要至少两个可用账号; 每台设备的流量统计依赖 nft (只有 iptables 的系统会退化成线路级改写)'
+                    ])
                 ])
             ]),
             E('div', { class: 'cbi-value' }, [
@@ -224,24 +228,6 @@ return view.extend({
                 ])
             ]),
             E('div', { class: 'cbi-value' }, [
-                E('label', { class: 'cbi-value-title' }, '智能多播'),
-                E('div', { class: 'cbi-value-field' }, [
-                    E('input', {
-                        type: 'checkbox',
-                        id: 'smart_dial',
-                        checked: self.config.smart_dial ? true : undefined,
-                        change: function(ev) {
-                            self.config.smart_dial = ev.target.checked;
-                        }
-                    }),
-                    E('div', { class: 'cbi-value-description' }, [
-                        '在按需多拨之上再加一层策略: 上行 / 连接数 / 设备数 也能触发扩容, 并且只让下载最猛的那台设备独占多路, 其它设备一律走第一条在线线路',
-                        E('br'),
-                        '需要同时打开"按需多拨"; 每台设备的流量统计依赖 nft (只有 iptables 的系统会退化成线路级改写)'
-                    ])
-                ])
-            ]),
-            E('div', { class: 'cbi-value' }, [
                 E('label', { class: 'cbi-value-title' }, '上行阈值'),
                 E('div', { class: 'cbi-value-field' }, [
                     E('input', {
@@ -256,7 +242,7 @@ return view.extend({
                             ev.target.value = self.config.demand_up_mbps;
                         }
                     }),
-                    E('div', { class: 'cbi-value-description' }, '已有 N 个账号在线、且最近一秒峰值上行达到 N × 这个值的一半 (Mbps) 时, 再认证下一个账号 (仅智能多播)')
+                    E('div', { class: 'cbi-value-description' }, '已有 N 个账号在线、且最近一秒峰值上行达到 N × 这个值的一半 (Mbps) 时, 再认证下一个账号')
                 ])
             ]),
             E('div', { class: 'cbi-value' }, [
@@ -274,7 +260,7 @@ return view.extend({
                             ev.target.value = self.config.smart_conns;
                         }
                     }),
-                    E('div', { class: 'cbi-value-description' }, '连接跟踪表里的连接数达到 N × 这个值时扩容; 0 表示不看这一项。只在确实有流量时才算数 (仅智能多播)')
+                    E('div', { class: 'cbi-value-description' }, '连接跟踪表里的连接数达到 N × 这个值时扩容; 0 表示不看这一项。只在确实有流量时才算数')
                 ])
             ]),
             E('div', { class: 'cbi-value' }, [
@@ -292,7 +278,7 @@ return view.extend({
                             ev.target.value = self.config.smart_devices;
                         }
                     }),
-                    E('div', { class: 'cbi-value-description' }, '局域网在线设备数达到 N × 这个值时扩容; 0 表示不看这一项。只在确实有流量时才算数 (仅智能多播)')
+                    E('div', { class: 'cbi-value-description' }, '局域网在线设备数达到 N × 这个值时扩容; 0 表示不看这一项。只在确实有流量时才算数')
                 ])
             ]),
             E('div', { class: 'cbi-value' }, [
@@ -310,7 +296,25 @@ return view.extend({
                             ev.target.value = self.config.smart_hold_secs;
                         }
                     }),
-                    E('div', { class: 'cbi-value-description' }, '扩容或收回之后这段时间内不再做新的调整, 防止在阈值附近来回抖动 (单位: 秒, 0 表示不限; 仅智能多播)')
+                    E('div', { class: 'cbi-value-description' }, '扩容或收回之后这段时间内不再做新的调整, 防止在阈值附近来回抖动 (单位: 秒, 0 表示不限)')
+                ])
+            ]),
+            E('div', { class: 'cbi-value' }, [
+                E('label', { class: 'cbi-value-title' }, '认证错峰'),
+                E('div', { class: 'cbi-value-field' }, [
+                    E('input', {
+                        type: 'number',
+                        id: 'auth_stagger_ms',
+                        class: 'cbi-input-text',
+                        min: 0,
+                        step: 500,
+                        value: self.config.auth_stagger_ms,
+                        change: function(ev) {
+                            self.config.auth_stagger_ms = self.normalizeCount(ev.target.value, 15000);
+                            ev.target.value = self.config.auth_stagger_ms;
+                        }
+                    }),
+                    E('div', { class: 'cbi-value-description' }, '多个账号同时被拉起时, 排位靠后的按排位差 × 这个间隔错开认证, 避免校园门户把同账号的并发登录互相踢掉 (单位: 毫秒, 0 表示不错峰)')
                 ])
             ])
         ]);
@@ -395,7 +399,7 @@ return view.extend({
             E('div', { style: 'margin-left: 25px;'}, [
                 E('p', { class: 'desc' }, '用于方便地调整 ESurfing 程序的配置文件'),
                 E('p', { class: 'desc' }, '账号密码与原电信认证程序的账号密码相同'),
-                E('p', { class: 'desc' }, 'LuCI 版本: 2.1.5-r2'),
+                E('p', { class: 'desc' }, 'LuCI 版本: 2.1.6-r2'),
                 E('p', { class: 'desc' }, '> Powered by BadGhost')
             ]),
             E('div', { class: 'cbi-section' }, [
@@ -435,7 +439,6 @@ return view.extend({
                 // 旧配置文件可能缺少超时参数, 这里补齐默认值, 避免输入框显示空值
                 self.config.conn_timeout = self.normalizeTimeout(self.config.conn_timeout, 3);
                 self.config.op_timeout = self.normalizeTimeout(self.config.op_timeout, 5);
-                self.config.demand_dial = !!self.config.demand_dial;
                 self.config.demand_mbps = self.normalizeTimeout(self.config.demand_mbps, 100);
                 self.config.demand_idle_mins = self.normalizeTimeout(self.config.demand_idle_mins, 5);
                 if (typeof self.config.demand_iface !== 'string') self.config.demand_iface = '';
@@ -444,6 +447,7 @@ return view.extend({
                 self.config.smart_conns = self.normalizeCount(self.config.smart_conns, 512);
                 self.config.smart_devices = self.normalizeCount(self.config.smart_devices, 12);
                 self.config.smart_hold_secs = self.normalizeCount(self.config.smart_hold_secs, 60);
+                self.config.auth_stagger_ms = self.normalizeCount(self.config.auth_stagger_ms, 15000);
                 self.showNotification('读取配置文件成功', 'success');
                 return self.config;
             })
@@ -456,8 +460,7 @@ return view.extend({
                     conn_timeout: 3,
                     op_timeout: 5,
                     web_port: 8888,
-                    demand_dial: false,
-                    demand_mbps: 100,
+                            demand_mbps: 100,
                     demand_idle_mins: 5,
                     demand_iface: '',
                     smart_dial: false,
@@ -465,6 +468,7 @@ return view.extend({
                     smart_conns: 512,
                     smart_devices: 12,
                     smart_hold_secs: 60,
+                    auth_stagger_ms: 15000,
                     accounts: [
                         {
                             username: '加载失败',
@@ -1024,8 +1028,7 @@ return view.extend({
                         conn_timeout: 3,
                         op_timeout: 5,
                         web_port: 8888,
-                        demand_dial: false,
-                        demand_mbps: 100,
+                                    demand_mbps: 100,
                         demand_idle_mins: 5,
                         demand_iface: '',
                         smart_dial: false,
@@ -1033,6 +1036,7 @@ return view.extend({
                         smart_conns: 512,
                         smart_devices: 12,
                         smart_hold_secs: 60,
+                        auth_stagger_ms: 15000,
                         accounts: [
                             {
                                 username: '',

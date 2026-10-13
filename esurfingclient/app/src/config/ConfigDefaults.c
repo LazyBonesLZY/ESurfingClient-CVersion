@@ -36,7 +36,6 @@ static const cfg_def_t s_cfg_defaults[] = {
     {"conn_timeout",     CFG_DEF_NUM, false, DEFAULT_CONN_TIMEOUT, NULL, "秒"},
     {"op_timeout",       CFG_DEF_NUM, false, DEFAULT_OP_TIMEOUT, NULL, "秒"},
     {"web_port",         CFG_DEF_NUM, false, DEFAULT_WEB_PORT, NULL, NULL},
-    {"demand_dial",      CFG_DEF_BOOL, DEFAULT_DEMAND_DIAL, 0, NULL, NULL},
     {"demand_mbps",      CFG_DEF_NUM, false, DEFAULT_DEMAND_MBPS, NULL, "Mbps"},
     {"demand_idle_mins", CFG_DEF_NUM, false, DEFAULT_DEMAND_IDLE_MINS, NULL, "分钟"},
     {"demand_iface",     CFG_DEF_STR, false, 0, "", NULL},
@@ -45,6 +44,7 @@ static const cfg_def_t s_cfg_defaults[] = {
     {"smart_conns",      CFG_DEF_NUM, false, DEFAULT_SMART_CONNS, NULL, NULL},
     {"smart_devices",    CFG_DEF_NUM, false, DEFAULT_SMART_DEVICES, NULL, NULL},
     {"smart_hold_secs",  CFG_DEF_NUM, false, DEFAULT_SMART_HOLD_SECS, NULL, "秒"},
+    {"auth_stagger_ms",  CFG_DEF_NUM, false, DEFAULT_AUTH_STAGGER_MS, NULL, "毫秒"},
 };
 
 static const cfg_def_t s_account_defaults[] = {
@@ -135,7 +135,29 @@ static uint8_t complete_cfg_obj(cJSON* obj, const cfg_def_t* defs, const size_t 
  */
 uint8_t complete_cfg(cJSON* cfg_json)
 {
-    uint8_t added = complete_cfg_obj(cfg_json, s_cfg_defaults,
+    uint8_t added = 0;
+
+    /**
+     * 旧版本把这件事拆成了 demand_dial (按需多拨) 与 smart_dial (智能多播) 两个键,
+     * 现在合并成一个开关 smart_dial —— 智能多播本身就包含按需多拨的行为。
+     *
+     * 老配置里只有 demand_dial 时把值搬过去, 然后把旧键删掉, 免得留着一个不再生效的开关
+     */
+    const cJSON* legacy_demand_dial = cJSON_GetObjectItem(cfg_json, "demand_dial");
+    if (legacy_demand_dial != NULL)
+    {
+        if (cJSON_GetObjectItem(cfg_json, "smart_dial") == NULL && cJSON_IsBool(legacy_demand_dial))
+        {
+            cJSON_AddBoolToObject(cfg_json, "smart_dial", cJSON_IsTrue(legacy_demand_dial));
+            LOG_INFO("配置里旧的 demand_dial=%s 已搬到合并后的 smart_dial",
+                cJSON_IsTrue(legacy_demand_dial) ? "true" : "false");
+        }
+        cJSON_DeleteItemFromObject(cfg_json, "demand_dial");
+        LOG_INFO("已删除合并后不再使用的 demand_dial 参数");
+        added++;
+    }
+
+    added += complete_cfg_obj(cfg_json, s_cfg_defaults,
         sizeof(s_cfg_defaults) / sizeof(s_cfg_defaults[0]), "配置里");
 
     const cJSON* accounts = cJSON_GetObjectItem(cfg_json, "accounts");

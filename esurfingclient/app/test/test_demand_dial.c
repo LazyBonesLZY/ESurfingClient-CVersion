@@ -31,6 +31,12 @@ uint64_t get_cur_tm_ms(void)
     return g_test_now;
 }
 
+/* DemandDial.c 内部一律用单调钟, 测试里同样由 g_test_now 驱动 */
+uint64_t get_steady_tm_ms(void)
+{
+    return g_test_now;
+}
+
 const char* safe_str(const char* str)
 {
     return str ? str : "";
@@ -86,7 +92,6 @@ long g_conn_timeout = 7;
 long g_op_timeout = 10;
 uint64_t g_start_run_tm = 0;
 
-bool g_demand_dial = true;
 uint32_t g_demand_mbps = 100;
 uint32_t g_demand_idle_mins = 5;
 char g_demand_iface[DEMAND_IFACE_LEN] = {0};
@@ -95,6 +100,7 @@ uint32_t g_demand_up_mbps = 20;
 uint32_t g_smart_conns = 512;
 uint32_t g_smart_devices = 12;
 uint32_t g_smart_hold_secs = 60;
+uint32_t g_auth_stagger_ms = 15000;
 uint8_t g_account_order[ACCOUNT_ORDER_MAX] = {0};
 uint32_t g_account_mark[ACCOUNT_ORDER_MAX] = {0};
 uint8_t g_account_order_cnt = 0;
@@ -270,8 +276,7 @@ int main(int argc, char** argv)
     reset_decision_state();
     check("ahead=0/blocking=0 => GO", decide(false, false), ACT_GO);
 
-    printf("\n== 场景 B: 下行到阈值, 待机账号该扩容 (智能多播关) ==\n");
-    g_smart_dial = false;
+    printf("\n== 场景 B: 下行到阈值, 待机账号该扩容 ==\n");
     write_peer_state(1, DEMAND_ONLINE);
     reset_decision_state();
     set_rates(120, 0);
@@ -280,8 +285,7 @@ int main(int argc, char** argv)
     set_rates(40, 0);
     check("下行 40M < 半条线 (50M) => HOLD", decide(false, false), ACT_HOLD);
 
-    printf("\n== 场景 C: 扩容后的静默期 (智能多播开) ==\n");
-    g_smart_dial = true;
+    printf("\n== 场景 C: 扩容后的静默期 ==\n");
     reset_decision_state();
     set_rates(120, 0);
     check("第一次达到阈值 => GO", decide(false, false), ACT_GO);
@@ -291,18 +295,16 @@ int main(int argc, char** argv)
     advance(61000, 120, 0);
     check("静默期过后可以再扩容 => GO", decide(false, false), ACT_GO);
 
-    printf("\n== 场景 C2: 没开智能多播时不该受静默期影响 (老用户行为不变) ==\n");
-    g_smart_dial = false;
-    g_smart_hold_secs = 60;
+    printf("\n== 场景 C2: 静默期配成 0 时不生效 ==\n");
+    g_smart_hold_secs = 0;
     reset_decision_state();
     set_rates(120, 0);
     check("第一次达到阈值 => GO", decide(false, false), ACT_GO);
     s_last_change_ms = g_test_now;
     check("紧接着再来一次: 静默期不该生效 => GO", decide(false, false), ACT_GO);
-    g_smart_dial = true;
+    g_smart_hold_secs = 60;
 
     printf("\n== 场景 D: 空闲收回 ==\n");
-    g_smart_dial = true;
     reset_decision_state();
     set_rates(30, 0);
     check("刚掉到收回线以下 => HOLD(要连续)", decide(true, false), ACT_HOLD);
@@ -382,7 +384,6 @@ int main(int argc, char** argv)
     printf("\n== 场景 M: 重设备状态文件的读写 ==\n");
     s_online_now = 2;
     g_smart_dial = true;
-    g_demand_dial = true;
     heavy_publish("192.168.1.66", g_test_now);
     const char* heavy = heavy_device();
     if (heavy != NULL && strcmp(heavy, "192.168.1.66") == 0)
@@ -450,7 +451,6 @@ int main(int argc, char** argv)
 
     printf("\n== 场景 O: 生成转发规则文件 (供 nft 语法校验) ==\n");
     g_smart_dial = true;
-    g_demand_dial = true;
     uint32_t from[2] = {0x200, 0x300};
     const bool ok = steer_apply_nft(0x100, from, 2, 0x3f00, "192.168.1.66");
     if (getenv("DEMAND_TEST_REQUIRE_NFT") != NULL)
@@ -481,7 +481,6 @@ int main(int argc, char** argv)
     printf("\n== 场景 Q: 重设备状态里写了非法地址时必须忽略 ==\n");
     s_online_now = 2;
     g_smart_dial = true;
-    g_demand_dial = true;
     {
         char path[160];
         snprintf(path, sizeof(path), DEMAND_DIR "/heavy.state");
@@ -599,11 +598,54 @@ int main(int argc, char** argv)
         check_bool("时钟回拨时重新计时, 不立即收线", held_for(&since, g_test_now - 1000, true, 30000), false);
     }
 
+    printf("\n== 场景 Y: 认证错峰 ==\n");
+    {
+        /* 三个账号, 本进程排位 2, 前面 1 个在线 => 排位差 1, 错峰 15 秒 */
+        g_prog_account = 3;
+        g_account_order_cnt = 3;
+        g_account_order[0] = 1; g_account_order[1] = 2; g_account_order[2] = 3;
+        g_account_mark[0] = 0x100; g_account_mark[1] = 0x200; g_account_mark[2] = 0x300;
+        write_peer_state(1, DEMAND_ONLINE);
+        remove_peer_state(2);
+        s_stagger_ms = 0;
+        reset_decision_state();
+        set_rates(150, 0);
+        check_bool("达到阈值, 本轮先准入 (排位差按在线数算)", demand_admit() == true, true);
+        check_bool("紧接着的准入被错峰拦住", demand_admit() == false, true);
+        g_test_now += 15000;
+        set_rates(150, 0); /* 推进时钟后刷新采样窗口, 否则判成统计过期 */
+        check_bool("15 秒错峰期满, 允许认证", demand_admit() == true, true);
+        check_bool("错峰只拦一次, 之后不再拦", demand_admit() == true, true);
+
+        /* 排位最前 (排位差 0) 不需要错峰 */
+        g_prog_account = 1;
+        g_account_order_cnt = 2;
+        s_stagger_ms = 0;
+        reset_decision_state();
+        set_rates(0, 0);
+        check_bool("排位最前的账号不受错峰限制", demand_admit() == true, true);
+
+        /* 配成 0 = 不错峰 */
+        g_prog_account = 3;
+        g_account_order_cnt = 3;
+        write_peer_state(1, DEMAND_ONLINE);
+        write_peer_state(2, DEMAND_ONLINE);
+        g_auth_stagger_ms = 0;
+        s_stagger_ms = 0;
+        reset_decision_state();
+        set_rates(250, 0);
+        check_bool("auth_stagger_ms=0 时不拦", demand_admit() == true, true);
+        check_bool("连续准入也不拦", demand_admit() == true, true);
+        g_auth_stagger_ms = 15000;
+
+        remove_peer_state(1);
+        remove_peer_state(2);
+        remove_peer_state(3);
+    }
+
     remove_peer_state(1);
     remove_peer_state(2);
     remove_peer_state(3);
     demand_clear();
-
-    printf("\n结果: 通过 %d 项, 失败 %d 项\n", s_pass, s_fail);
     return s_fail == 0 ? 0 : 1;
 }

@@ -1,5 +1,5 @@
 <%
-local config_json = '{"enabled":false,"web_external_acc":false,"log_lv":4,"log_dir":"/var/log/esurfing","conn_timeout":3,"op_timeout":5,"web_port":8888,"demand_dial":false,"demand_mbps":100,"demand_idle_mins":5,"demand_iface":"","smart_dial":false,"demand_up_mbps":20,"smart_conns":512,"smart_devices":12,"smart_hold_secs":60,"accounts":[{"username":"","password":"","channel":"phone","mark":"","time_windows":[]}]}'
+local config_json = '{"enabled":false,"web_external_acc":false,"log_lv":4,"log_dir":"/var/log/esurfing","conn_timeout":3,"op_timeout":5,"web_port":8888,"demand_mbps":100,"demand_idle_mins":5,"demand_iface":"","smart_dial":false,"demand_up_mbps":20,"smart_conns":512,"smart_devices":12,"smart_hold_secs":60,"auth_stagger_ms":15000,"accounts":[{"username":"","password":"","channel":"phone","mark":"","time_windows":[]}]}'
 local file = io.open("/etc/config/esurfingclient", "r")
 if file then
     local content = file:read("*a")
@@ -173,7 +173,7 @@ end
 <div style='margin-left: 25px;'>
     <p class='desc'>用于方便地调整 ESurfing 程序的配置文件</p>
     <p class='desc'>账号密码与原电信认证程序的账号密码相同</p>
-    <p class='desc'>LuCI 版本: 2.1.5-r2</p>
+    <p class='desc'>LuCI 版本: 2.1.6-r2</p>
     <p class='desc' style='margin-bottom: 15px;'>> Powered by BadGhost</p>
 </div>
 
@@ -230,10 +230,10 @@ end
                 </div>
             </div>
             <div class='cbi-value'>
-                <label class='cbi-value-title' for='demand_dial'>按需多拨</label>
+                <label class='cbi-value-title' for='smart_dial'>智能多播</label>
                 <div class='cbi-value-field'>
-                    <input type='checkbox' id='demand_dial' name='demand_dial' value='1' />
-                    <div class='cbi-value-description'>平时只认证排在最前的账号, 下载量大时再逐个认证后面的账号。进程仍然每个账号一个, 待机的账号不占用在线名额</div>
+                    <input type='checkbox' id='smart_dial' name='smart_dial' value='1' />
+                    <div class='cbi-value-description'>平时只认证排在最前的账号; 下行 / 上行 / 连接数 / 设备数 任一项到线时再逐个认证后面的账号, 空闲时按尾线顺序逐条收回。只有下载最猛的那台设备独占多路, 其它设备走第一条在线线路。需要至少两个可用账号; 每台设备的流量统计依赖 nft</div>
                 </div>
             </div>
             <div class='cbi-value'>
@@ -258,38 +258,38 @@ end
                 </div>
             </div>
             <div class='cbi-value'>
-                <label class='cbi-value-title' for='smart_dial'>智能多播</label>
-                <div class='cbi-value-field'>
-                    <input type='checkbox' id='smart_dial' name='smart_dial' value='1' />
-                    <div class='cbi-value-description'>在按需多拨之上再加一层策略: 上行 / 连接数 / 设备数 也能触发扩容, 并且只让下载最猛的那台设备独占多路, 其它设备一律走第一条在线线路。需要同时打开"按需多拨"; 每台设备的流量统计依赖 nft</div>
-                </div>
-            </div>
-            <div class='cbi-value'>
                 <label class='cbi-value-title' for='demand_up_mbps'>上行阈值</label>
                 <div class='cbi-value-field'>
                     <input type='number' id='demand_up_mbps' class='cbi-input-text' name='demand_up_mbps' min='1' step='1' />
-                    <div class='cbi-value-description'>已有 N 个账号在线、且最近一秒峰值上行达到 N × 这个值的一半 (Mbps) 时, 再认证下一个账号 (仅智能多播)</div>
+                    <div class='cbi-value-description'>已有 N 个账号在线、且最近一秒峰值上行达到 N × 这个值的一半 (Mbps) 时, 再认证下一个账号</div>
                 </div>
             </div>
             <div class='cbi-value'>
                 <label class='cbi-value-title' for='smart_conns'>连接数阈值</label>
                 <div class='cbi-value-field'>
                     <input type='number' id='smart_conns' class='cbi-input-text' name='smart_conns' min='0' step='1' />
-                    <div class='cbi-value-description'>连接跟踪表里的连接数达到 N × 这个值时扩容; 0 表示不看这一项。只在确实有流量时才算数 (仅智能多播)</div>
+                    <div class='cbi-value-description'>连接跟踪表里的连接数达到 N × 这个值时扩容; 0 表示不看这一项。只在确实有流量时才算数</div>
                 </div>
             </div>
             <div class='cbi-value'>
                 <label class='cbi-value-title' for='smart_devices'>设备数阈值</label>
                 <div class='cbi-value-field'>
                     <input type='number' id='smart_devices' class='cbi-input-text' name='smart_devices' min='0' step='1' />
-                    <div class='cbi-value-description'>局域网在线设备数达到 N × 这个值时扩容; 0 表示不看这一项。只在确实有流量时才算数 (仅智能多播)</div>
+                    <div class='cbi-value-description'>局域网在线设备数达到 N × 这个值时扩容; 0 表示不看这一项。只在确实有流量时才算数</div>
                 </div>
             </div>
             <div class='cbi-value'>
                 <label class='cbi-value-title' for='smart_hold_secs'>变更静默期</label>
                 <div class='cbi-value-field'>
                     <input type='number' id='smart_hold_secs' class='cbi-input-text' name='smart_hold_secs' min='0' step='1' />
-                    <div class='cbi-value-description'>扩容或收回之后这段时间内不再做新的调整, 防止在阈值附近来回抖动 (单位: 秒, 0 表示不限; 仅智能多播)</div>
+                    <div class='cbi-value-description'>扩容或收回之后这段时间内不再做新的调整, 防止在阈值附近来回抖动 (单位: 秒, 0 表示不限)</div>
+                </div>
+            </div>
+            <div class='cbi-value'>
+                <label class='cbi-value-title' for='auth_stagger_ms'>认证错峰</label>
+                <div class='cbi-value-field'>
+                    <input type='number' id='auth_stagger_ms' class='cbi-input-text' name='auth_stagger_ms' min='0' step='500' />
+                    <div class='cbi-value-description'>多个账号同时被拉起时, 排位靠后的按排位差 × 这个间隔错开认证, 避免校园门户把同账号的并发登录互相踢掉 (单位: 毫秒, 0 表示不错峰)</div>
                 </div>
             </div>
         </div>
@@ -632,7 +632,6 @@ end
             log_lv: 4,
             conn_timeout: 3,
             op_timeout: 5,
-            demand_dial: false,
             demand_mbps: 100,
             demand_idle_mins: 5,
             demand_iface: '',
@@ -641,6 +640,7 @@ end
             smart_conns: 512,
             smart_devices: 12,
             smart_hold_secs: 60,
+            auth_stagger_ms: 15000,
             accounts: [{
                 username: '',
                 password: '',
@@ -970,10 +970,6 @@ end
         e.target.value = config.op_timeout;
     });
 
-    var demand_dial = document.getElementById('demand_dial');
-    demand_dial.addEventListener('change', function(e) {
-        config.demand_dial = e.target.checked;
-    });
 
     var demand_mbps = document.getElementById('demand_mbps');
     demand_mbps.addEventListener('change', function(e) {
@@ -1020,6 +1016,11 @@ end
         config.smart_hold_secs = normalizeCount(e.target.value, 60);
         e.target.value = config.smart_hold_secs;
     });
+    var auth_stagger_ms = document.getElementById('auth_stagger_ms');
+    auth_stagger_ms.addEventListener('change', function(e) {
+        config.auth_stagger_ms = normalizeCount(e.target.value, 15000);
+        e.target.value = config.auth_stagger_ms;
+    });
 
     document.addEventListener('DOMContentLoaded', function() {
         showNotification('正在读取配置文件', 'info');
@@ -1028,7 +1029,6 @@ end
         // 旧配置文件可能缺少超时参数, 这里补齐默认值, 避免输入框显示空值
         config.conn_timeout = normalizeTimeout(config.conn_timeout, 3);
         config.op_timeout = normalizeTimeout(config.op_timeout, 5);
-        config.demand_dial = !!config.demand_dial;
         config.demand_mbps = normalizeTimeout(config.demand_mbps, 100);
         config.demand_idle_mins = normalizeTimeout(config.demand_idle_mins, 5);
         if (typeof config.demand_iface !== 'string') config.demand_iface = '';
@@ -1037,9 +1037,9 @@ end
         config.smart_conns = normalizeCount(config.smart_conns, 512);
         config.smart_devices = normalizeCount(config.smart_devices, 12);
         config.smart_hold_secs = normalizeCount(config.smart_hold_secs, 60);
+        config.auth_stagger_ms = normalizeCount(config.auth_stagger_ms, 15000);
         conn_timeout.value = config.conn_timeout;
         op_timeout.value = config.op_timeout;
-        demand_dial.checked = config.demand_dial;
         demand_mbps.value = config.demand_mbps;
         demand_idle_mins.value = config.demand_idle_mins;
         demand_iface.value = config.demand_iface;
@@ -1048,6 +1048,7 @@ end
         smart_conns.value = config.smart_conns;
         smart_devices.value = config.smart_devices;
         smart_hold_secs.value = config.smart_hold_secs;
+        auth_stagger_ms.value = config.auth_stagger_ms;
         renderTable();
         showNotification('读取配置文件完成', 'succ');
     });

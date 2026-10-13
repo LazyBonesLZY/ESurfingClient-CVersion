@@ -49,8 +49,6 @@
 
 #define DEFAULT_WEB_EXTERNAL_ACC false
 
-#define DEFAULT_DEMAND_DIAL false
-
 #define DEFAULT_DEMAND_MBPS 100
 
 #define DEFAULT_DEMAND_IDLE_MINS 5
@@ -65,6 +63,8 @@
 
 #define DEFAULT_SMART_HOLD_SECS 60
 
+/** 多账号同时认证的错峰间隔 (毫秒); 0 = 不错峰 */
+#define DEFAULT_AUTH_STAGGER_MS 15000
 #define DEMAND_IFACE_LEN 128
 
 #define ACCOUNT_ORDER_MAX 255
@@ -210,8 +210,6 @@ extern long g_conn_timeout;
 
 extern long g_op_timeout;
 
-extern bool g_demand_dial;
-
 extern uint32_t g_demand_mbps;
 
 extern uint32_t g_demand_idle_mins;
@@ -228,6 +226,7 @@ extern uint32_t g_smart_devices;
 
 extern uint32_t g_smart_hold_secs;
 
+extern uint32_t g_auth_stagger_ms;
 extern uint8_t g_account_order[ACCOUNT_ORDER_MAX];
 
 extern uint32_t g_account_mark[ACCOUNT_ORDER_MAX];

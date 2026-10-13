@@ -54,8 +54,6 @@ long g_conn_timeout = DEFAULT_CONN_TIMEOUT;
 
 long g_op_timeout = DEFAULT_OP_TIMEOUT;
 
-bool g_demand_dial = DEFAULT_DEMAND_DIAL;
-
 uint32_t g_demand_mbps = DEFAULT_DEMAND_MBPS;
 
 uint32_t g_demand_idle_mins = DEFAULT_DEMAND_IDLE_MINS;
@@ -72,6 +70,7 @@ uint32_t g_smart_devices = DEFAULT_SMART_DEVICES;
 
 uint32_t g_smart_hold_secs = DEFAULT_SMART_HOLD_SECS;
 
+uint32_t g_auth_stagger_ms = DEFAULT_AUTH_STAGGER_MS;
 uint8_t g_account_order[ACCOUNT_ORDER_MAX] = {0};
 
 uint32_t g_account_mark[ACCOUNT_ORDER_MAX] = {0};

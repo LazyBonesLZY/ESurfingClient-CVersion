@@ -22,6 +22,12 @@
 /*
  * 状态目录。可以被测试覆盖 (app/test/test_demand_dial.c 会指到 /tmp 下),
  * 正常构建时用默认值。
+ *
+ * 本文件里所有时间都是【单调钟】(get_steady_tm_ms, CLOCK_MONOTONIC):
+ * 状态新鲜度、空闲计时、静默期、退避全都只做减法测间隔, 而 OpenWrt 开机后
+ * NTP 校时会把墙钟整体前跳, 墙钟一减就会凭空多出几十小时 —— 状态文件会被
+ * 判成"对端已死"、空闲计时会瞬间到期。单调钟在内核里全局一致, 跨进程比较
+ * 没有问题; /var/run 是 tmpfs, 重启即清空, 也不会读到上一条命的时钟。
  */
 #ifndef DEMAND_DIR
 #define DEMAND_DIR "/var/run/esurfingclient"
@@ -112,6 +118,9 @@ static int s_conns = -1;
 static int s_devs = -1;
 
 static int s_last_admit = -1;
+
+/** 认证错峰: 到这个时刻才允许本账号开始认证, 0 表示不受限 */
+static uint64_t s_stagger_ms = 0;
 static bool s_yield_logged = false;
 static bool s_rank_warned = false;
 static bool s_rx_warned = false;
@@ -155,7 +164,7 @@ typedef enum
 
 bool demand_enabled(void)
 {
-    return g_demand_dial && g_account_order_cnt > 1 && g_prog_role == ROLE_AUTH && g_prog_account != 0;
+    return g_smart_dial && g_account_order_cnt > 1 && g_prog_role == ROLE_AUTH && g_prog_account != 0;
 }
 
 static int my_index(void)
@@ -186,7 +195,7 @@ static void ensure_dir(void)
     if (mkdir(DEMAND_DIR, 0755) == 0 || errno == EEXIST) return;
     if (s_dir_warned) return;
 
-    LOG_WARN("无法创建 %s: %s, 按需多拨无法在账号之间协同", DEMAND_DIR, strerror(errno));
+    LOG_WARN("无法创建 %s: %s, 智能多播无法在账号之间协同", DEMAND_DIR, strerror(errno));
     s_dir_warned = true;
 }
 
@@ -206,7 +215,7 @@ static void write_file(const uint64_t now)
     {
         if (s_dir_warned == false)
         {
-            LOG_WARN("无法写入按需多拨状态 %s: %s", tmp, strerror(errno));
+            LOG_WARN("无法写入智能多播状态 %s: %s", tmp, strerror(errno));
             s_dir_warned = true;
         }
         return;
@@ -228,7 +237,7 @@ void demand_publish(const demand_state_t state)
 {
     if (demand_enabled() == false) return;
 
-    const uint64_t now = get_cur_tm_ms();
+    const uint64_t now = get_steady_tm_ms();
     if ((int)state != s_state)
     {
         /* 静默期从实际状态转换开始, 准入/收回查询本身不消耗它。 */
@@ -271,11 +280,11 @@ void demand_clear(void)
 void demand_banner(void)
 {
     demand_steer(false);
-    if (g_demand_dial == false) return;
+    if (g_smart_dial == false) return;
 
     if (g_account_order_cnt <= 1)
     {
-        LOG_INFO("按需多拨已开启, 可用账号不足 2 个, 本账号照常认证");
+        LOG_INFO("智能多播已开启, 可用账号不足 2 个, 本账号照常认证");
         return;
     }
 
@@ -283,23 +292,16 @@ void demand_banner(void)
     const char* iface = g_demand_iface[0] != '\0' ? g_demand_iface : "自动";
     if (idx < 0)
     {
-        LOG_WARN("按需多拨已开启, 但找不到本账号的排位, 本账号照常认证");
+        LOG_WARN("智能多播已开启, 但找不到本账号的排位, 本账号照常认证");
         return;
     }
 
-    LOG_INFO("按需多拨已开启, 本账号排位 %d/%" PRIu8 ", 下行阈值 %" PRIu32 " Mbps, 连续 %" PRIu32
-             " 分钟低于一半则收回, 统计网口: %s",
-        idx + 1, g_account_order_cnt, g_demand_mbps, g_demand_idle_mins, iface);
-
-    if (g_smart_dial == false)
-    {
-        LOG_INFO("智能多播未开启 (smart_dial=false), 只按下行扩容, 不做设备级多路独占");
-        return;
-    }
-
-    LOG_INFO("智能多播已开启: 上行阈值 %" PRIu32 " Mbps, 连接数阈值 %" PRIu32
-             " (0=不看), 设备数阈值 %" PRIu32 " (0=不看), 变更静默期 %" PRIu32 " 秒",
-        g_demand_up_mbps, g_smart_conns, g_smart_devices, g_smart_hold_secs);
+    LOG_INFO("智能多播已开启, 本账号排位 %d/%" PRIu8 ", 统计网口: %s",
+        idx + 1, g_account_order_cnt, iface);
+    LOG_INFO("智能多播扩容依据: 下行 %" PRIu32 " / 上行 %" PRIu32 " / 连接数 %" PRIu32
+             " / 设备数 %" PRIu32 " (后三项 0 = 不看), 空闲 %" PRIu32 " 分钟收回, 变更静默期 %" PRIu32 " 秒",
+        g_demand_mbps, g_demand_up_mbps, g_smart_conns, g_smart_devices,
+        g_demand_idle_mins, g_smart_hold_secs);
     LOG_INFO("智能多播: 只有下行最猛 (≥ %" PRIu32 " Mbps) 的那台设备独占多路, 其余设备的新连接走第一条在线线路",
         g_demand_mbps);
     LOG_INFO("智能多播部署检查: mwan3 下载规则关闭 sticky、均衡成员同 metric, 流量卸载关闭或排除受管理流量; 当前仅管理 IPv4");
@@ -385,10 +387,10 @@ static void log_ifaces(char names[][DEMAND_IFACE_NAME], const int count)
 
     if (count == 0)
     {
-        LOG_WARN("按需多拨没有可统计的网口 (默认路由或 demand_iface), 上下行按 0 计, 不会扩容");
+        LOG_WARN("智能多播没有可统计的网口 (默认路由或 demand_iface), 上下行按 0 计, 不会扩容");
         return;
     }
-    LOG_INFO("按需多拨统计网口: %s", joined);
+    LOG_INFO("智能多播统计网口: %s", joined);
 }
 
 /**
@@ -768,7 +770,7 @@ static bool account_is_online(const int index)
     uint64_t updated = 0;
     if (read_peer(idx, &pid, &state, &since, &updated) == false) return false;
 
-    const uint64_t now = get_cur_tm_ms();
+    const uint64_t now = get_steady_tm_ms();
     if (pid_alive(pid) == false || within(now, updated, fresh_ms()) == false) return false;
     return state == DEMAND_ONLINE;
 }
@@ -843,7 +845,7 @@ static const char* heavy_device(void)
     static char out[IP_LEN];
 
     out[0] = '\0';
-    if (g_smart_dial == false || g_demand_dial == false) return NULL;
+    if (g_smart_dial == false) return NULL;
     if (s_online_now < 2) return NULL;
 
     char path[160];
@@ -871,7 +873,7 @@ static const char* heavy_device(void)
         return NULL;
     }
 
-    const uint64_t now = get_cur_tm_ms();
+    const uint64_t now = get_steady_tm_ms();
     if (pid_alive(pid) == false) return NULL;
     if (within(now, updated, fresh_ms()) == false) return NULL;
 
@@ -1068,7 +1070,7 @@ static void heavy_update(const dev_rate_t* cur, const int n)
  */
 static void acct_sample(const uint64_t now)
 {
-    if (g_smart_dial == false || g_demand_dial == false) return;
+    if (g_smart_dial == false) return;
     if (s_dev_sample_ms != 0 && now >= s_dev_sample_ms && now - s_dev_sample_ms < SMART_ACCT_SAMPLE_MS) return;
 
     const uint64_t prev_ms = s_dev_sample_ms;
@@ -1142,7 +1144,7 @@ static void acct_sample(const uint64_t now)
 
 static void demand_sample(void)
 {
-    const uint64_t now = get_cur_tm_ms();
+    const uint64_t now = get_steady_tm_ms();
     if (s_sample_ms != 0 && now >= s_sample_ms && now - s_sample_ms < 1000) return;
     s_sample_ms = now;
 
@@ -1155,7 +1157,7 @@ static void demand_sample(void)
     {
         if (s_rx_warned == false)
         {
-            LOG_WARN("按需多拨读不到网口收发字节, 暂停负载扩容与空闲收回, 保持现有线路");
+            LOG_WARN("智能多播读不到网口收发字节, 暂停负载扩容与空闲收回, 保持现有线路");
             s_rx_warned = true;
         }
         s_count = 0;
@@ -1180,16 +1182,8 @@ static void demand_sample(void)
     s_samples[s_count].tx = tx;
     s_count++;
 
-    if (g_smart_dial && g_demand_dial)
-    {
-        s_conns = read_conntrack_count();
-        s_devs = read_device_count();
-    }
-    else
-    {
-        s_conns = -1;
-        s_devs = -1;
-    }
+    s_conns = read_conntrack_count();
+    s_devs = read_device_count();
 }
 
 typedef enum
@@ -1348,7 +1342,7 @@ static bool steer_apply_nft(const uint32_t target, const uint32_t* from, const i
      * 这样开关智能多播不需要删链 (删链失败会把整批规则一起废掉)
      */
     fprintf(fp, "flush chain ip esurf_demand " SMART_ACCT_CHAIN "\n");
-    if (g_smart_dial && g_demand_dial && net_n > 0)
+    if (g_smart_dial && net_n > 0)
     {
         fprintf(fp, "add rule ip esurf_demand " SMART_ACCT_CHAIN
                     " ip saddr != @" SMART_ACCT_SET_LAN " ip daddr @" SMART_ACCT_SET_LAN
@@ -1382,7 +1376,7 @@ static bool steer_apply_nft(const uint32_t target, const uint32_t* from, const i
      * - 只有在线线路 >= 2 条时调用方才传 heavy 进来
      * - 只在新会话首次确认前选路, 保存最终 ct mark; 保留已有 NAT 映射和其它标记位
      */
-    if (g_smart_dial && g_demand_dial && heavy != NULL && heavy[0] != '\0' && net_n > 0)
+    if (g_smart_dial && heavy != NULL && heavy[0] != '\0' && net_n > 0)
     {
         const uint32_t keep = ~mask;
         fprintf(fp,
@@ -1453,7 +1447,7 @@ static bool steer_apply_iptables(const uint32_t target, const uint32_t* from, co
  */
 static bool steer_is_leader(void)
 {
-    const uint64_t now = get_cur_tm_ms();
+    const uint64_t now = get_steady_tm_ms();
 
     for (int i = 0; i < g_account_order_cnt; i++)
     {
@@ -1496,7 +1490,7 @@ static void demand_steer(const bool force)
     applied_leader = true;
 
     /**
-     * 没开按需多拨时不必建表: 之前没下发过就直接返回,
+     * 没开智能多播时不必建表: 之前没下发过就直接返回,
      * 下发过 (applied_n >= 0) 才走一遍把残留规则清掉
      */
     if (demand_enabled() == false && applied_n < 0) return;
@@ -1536,7 +1530,7 @@ static void demand_steer(const bool force)
     }
 
     const uint32_t mask = mwan_mask();
-    const bool smart_now = g_smart_dial && g_demand_dial;
+    const bool smart_now = g_smart_dial;
     const bool dirty = s_steer_dirty || became_leader;
     s_steer_dirty = false;
 
@@ -1552,7 +1546,7 @@ static void demand_steer(const bool force)
     static uint64_t fail_ms = 0;
     static bool fail_cached = false;
 
-    const uint64_t now_ms = get_cur_tm_ms();
+    const uint64_t now_ms = get_steady_tm_ms();
     if (fail_cached &&
         (fail_target & mask) == (target & mask) &&
         marks_equal(fail_from, fail_from_n, from, from_n, mask) &&
@@ -1598,7 +1592,7 @@ static void demand_steer(const bool force)
     {
         if (warned == false)
         {
-            LOG_WARN("按需多拨: 无法改写转发标记, 未认证的线路仍会被 mwan3 分到流量");
+            LOG_WARN("智能多播: 无法改写转发标记, 未认证的线路仍会被 mwan3 分到流量");
             warned = true;
         }
 
@@ -1608,7 +1602,7 @@ static void demand_steer(const bool force)
         for (int i = 0; i < from_n; i++) fail_from[i] = from[i];
         fail_smart = smart_now;
         copy_ip(fail_heavy, sizeof(fail_heavy), safe_str(heavy));
-        fail_ms = get_cur_tm_ms();
+        fail_ms = get_steady_tm_ms();
 
         flock(lock_fd, LOCK_UN);
         close(lock_fd);
@@ -1622,11 +1616,11 @@ static void demand_steer(const bool force)
         marks_equal(applied_from, applied_n, from, from_n, mask) == false;
     if (from_n == 0)
     {
-        if (applied_n > 0) LOG_INFO("按需多拨: 新连接恢复由 mwan3 分配");
+        if (applied_n > 0) LOG_INFO("智能多播: 新连接恢复由 mwan3 分配");
     }
     else if (changed)
     {
-        LOG_INFO("按需多拨: 未认证线路的新连接改走到标记 0x%" PRIx32, target);
+        LOG_INFO("智能多播: 未认证线路的新连接改走到标记 0x%" PRIx32, target);
     }
 
     if (heavy != NULL && heavy[0] != '\0')
@@ -1641,7 +1635,7 @@ static void demand_steer(const bool force)
         LOG_INFO("智能多播: 取消设备级多路独占, 转发交给 mwan3 分配");
     }
 
-    applied_ms = get_cur_tm_ms();
+    applied_ms = get_steady_tm_ms();
     applied_target = target;
     applied_n = from_n;
     applied_smart = smart_now;
@@ -1721,12 +1715,10 @@ static bool held_for(uint64_t* since, const uint64_t now, const bool below, cons
 /**
  * 上一次扩容 / 收回之后还在静默期里吗
  *
- * 静默期是智能多播的开关 (配置项与界面都写着"仅智能多播"), 没开智能多播时不能悄悄生效:
- * 那等于改掉了老用户原有的扩容/收回节奏。
+ * 静默期只在这个功能开着时生效: 关掉时行为与没有它时完全一致。
  */
 static bool in_hold_off(const uint64_t now)
 {
-    if (g_smart_dial == false) return false;
     if (g_smart_hold_secs == 0) return false;
     const uint64_t window = (uint64_t)g_smart_hold_secs * 1000ULL;
     if (s_last_change_ms != 0 && within(now, s_last_change_ms, window)) return true;
@@ -1763,13 +1755,13 @@ static demand_act_t decide(const bool online, const bool authing)
     {
         if (s_rank_warned == false)
         {
-            LOG_WARN("按需多拨找不到本账号的排位, 本账号照常认证");
+            LOG_WARN("智能多播找不到本账号的排位, 本账号照常认证");
             s_rank_warned = true;
         }
         return ACT_GO;
     }
 
-    const uint64_t now = get_cur_tm_ms();
+    const uint64_t now = get_steady_tm_ms();
     int ahead = 0;
     int blocking = 0;
     classify(now, my, &ahead, &blocking);
@@ -1781,7 +1773,6 @@ static demand_act_t decide(const bool online, const bool authing)
     current_rates(now, &down, &up);
     peak_rates(now, &peak_down, &peak_up);
 
-    const bool smart = g_smart_dial;
     const uint64_t need_down = (uint64_t)ahead * (uint64_t)g_demand_mbps * 1000000ULL / 8ULL;
     const uint64_t need_up = (uint64_t)ahead * (uint64_t)g_demand_up_mbps * 1000000ULL / 8ULL;
     const uint64_t need_conns = (uint64_t)ahead * (uint64_t)g_smart_conns;
@@ -1800,16 +1791,16 @@ static demand_act_t decide(const bool online, const bool authing)
     const uint64_t floor_bps = (uint64_t)g_demand_mbps * 1000000ULL / 8ULL / 4ULL;
     const bool active = (down + up) >= floor_bps;
 
-    const bool use_conns = smart && active && s_conns >= 0 && g_smart_conns > 0;
-    const bool use_devs = smart && active && s_devs >= 0 && g_smart_devices > 0;
+    const bool use_conns = active && s_conns >= 0 && g_smart_conns > 0;
+    const bool use_devs = active && s_devs >= 0 && g_smart_devices > 0;
 
     bool high = (rise_down > 0 && peak_down >= rise_down);
-    if (smart && rise_up > 0 && peak_up >= rise_up) high = true;
+    if (rise_up > 0 && peak_up >= rise_up) high = true;
     if (use_conns && (uint64_t)s_conns >= need_conns) high = true;
     if (use_devs && (uint64_t)s_devs >= need_devs) high = true;
 
     bool low = down < low_down;
-    if (smart && up >= low_up) low = false;
+    if (up >= low_up) low = false;
     if (use_conns && (uint64_t)s_conns >= need_conns / 2) low = false;
     if (use_devs && (uint64_t)s_devs >= need_devs / 2) low = false;
 
@@ -1889,7 +1880,7 @@ static demand_act_t decide(const bool online, const bool authing)
 
 static void log_snapshot(const char* what)
 {
-    LOG_INFO("按需多拨: %s (前面在线 %d 个, 挡路 %d 个, 最近一秒峰值下行约 %" PRIu64 " Mbps, 上行约 %" PRIu64
+    LOG_INFO("智能多播: %s (前面在线 %d 个, 挡路 %d 个, 最近一秒峰值下行约 %" PRIu64 " Mbps, 上行约 %" PRIu64
              " Mbps, 连接 %d, 设备 %d, 判定: %s%s)",
         what, s_dbg_ahead, s_dbg_blocking,
         (s_dbg_bps * 8ULL) / 1000000ULL, (s_dbg_up_bps * 8ULL) / 1000000ULL,
@@ -1907,7 +1898,7 @@ bool demand_admit(void)
     {
         if (go == false)
         {
-            log_snapshot(g_smart_dial ? "待机, 下行/上行/连接数/设备数都没到扩容线" : "待机, 下载量未到扩容阈值");
+            log_snapshot("待机, 下行/上行/连接数/设备数都没到扩容线");
         }
         else if (s_last_admit == 0)
         {
@@ -1915,7 +1906,28 @@ bool demand_admit(void)
         }
         s_last_admit = (int)go;
     }
-    return go;
+    if (go == false) return false;
+
+    /**
+     * 认证错峰: 多个待机账号同时被拉起时, 按"本账号排位 - 已在线数"档错开,
+     * 每档间隔 auth_stagger_ms。服务重启 (或一次大的扩容) 会让所有账号同一秒
+     * 一起向认证服务器发起请求 —— 尤其是几个账号用同一个用户名时, 校园门户会把
+     * 后到的会话当前一个的重复登录踢掉, 表现就是反复掉线。错开之后再准入,
+     * 门户来得及把上一个会话挂稳。0 表示不错峰。
+     *
+     * 触发准入的这一次调用放行 (调用方拿到 true 后才好走出"待机"分支),
+     * 紧接着的轮询在期限之前一律拒绝; 期限到了就放行并解除。
+     */
+    if (g_auth_stagger_ms > 0 && s_stagger_ms == 0)
+    {
+        const int slot = my_index() - s_dbg_ahead;
+        if (slot > 0) s_stagger_ms = get_steady_tm_ms() + (uint64_t)slot * g_auth_stagger_ms;
+        return true;
+    }
+    if (s_stagger_ms != 0 && get_steady_tm_ms() < s_stagger_ms) return false;
+    s_stagger_ms = 0;
+
+    return true;
 }
 
 bool demand_yield(const bool online)
@@ -1942,7 +1954,7 @@ void demand_touch(void)
     if (tl_thread_name != NULL && strcmp(tl_thread_name, "watchdog") == 0) return;
     if (demand_enabled() == false || s_state < 0) return;
 
-    const uint64_t now = get_cur_tm_ms();
+    const uint64_t now = get_steady_tm_ms();
     if (s_touch_ms != 0 && now >= s_touch_ms && now - s_touch_ms < 1000) return;
     s_touch_ms = now;
 

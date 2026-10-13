@@ -28,7 +28,6 @@ static const char s_default_cfg[] = "{\n"
                                     "   \"conn_timeout\": 7,\n"
                                     "   \"op_timeout\": 10,\n"
                                     "   \"web_port\": 8888,\n"
-                                    "   \"demand_dial\": false,\n"
                                     "   \"demand_mbps\": 100,\n"
                                     "   \"demand_idle_mins\": 5,\n"
                                     "   \"demand_iface\": \"\",\n"
@@ -36,7 +35,7 @@ static const char s_default_cfg[] = "{\n"
                                     "   \"demand_up_mbps\": 20,\n"
                                     "   \"smart_conns\": 512,\n"
                                     "   \"smart_devices\": 12,\n"
-                                    "   \"smart_hold_secs\": 60,\n"
+                                    "   \"smart_hold_secs\": 60,\n   \"auth_stagger_ms\": 15000,\n"
                                     "   \"accounts\": [\n"
                                     "       {\n"
                                     "           \"username\": \"\",\n"
@@ -164,7 +163,6 @@ const char* get_config_path(void)
 bool load_cfg()
 {
     g_cfg_loaded = false;
-    g_demand_dial = DEFAULT_DEMAND_DIAL;
     g_demand_mbps = DEFAULT_DEMAND_MBPS;
     g_demand_idle_mins = DEFAULT_DEMAND_IDLE_MINS;
     g_demand_iface[0] = '\0';
@@ -173,6 +171,7 @@ bool load_cfg()
     g_smart_conns = DEFAULT_SMART_CONNS;
     g_smart_devices = DEFAULT_SMART_DEVICES;
     g_smart_hold_secs = DEFAULT_SMART_HOLD_SECS;
+    g_auth_stagger_ms = DEFAULT_AUTH_STAGGER_MS;
     g_account_order_cnt = 0;
     memset(g_account_mark, 0, sizeof(g_account_mark));
     /**
@@ -397,19 +396,6 @@ bool load_cfg()
         LOG_DEBUG("web_external_acc 参数不存在, 使用默认参数 (关闭)");
     }
 
-    const cJSON* demand_dial = cJSON_GetObjectItem(cfg_json, "demand_dial");
-    if (demand_dial)
-    {
-        if (cJSON_IsBool(demand_dial))
-        {
-            g_demand_dial = cJSON_IsTrue(demand_dial);
-        }
-        else
-        {
-            LOG_WARN("demand_dial 参数不正确 (应为 true / false), 使用默认参数 (关闭)");
-        }
-    }
-
     const cJSON* demand_mbps = cJSON_GetObjectItem(cfg_json, "demand_mbps");
     if (demand_mbps)
     {
@@ -521,9 +507,22 @@ bool load_cfg()
         }
     }
 
-    if (g_smart_dial && g_demand_dial == false)
+    /**
+     * 认证错峰: 排位靠后的账号在服务重启/集中扩容时按 排位差 × 这个间隔错开认证。
+     * 多个账号 (尤其是同一个用户名) 同一秒一起认证, 校园门户会把后到的当前一个的
+     * 重复登录踢掉, 表现就是反复掉线。0 表示不错峰。
+     */
+    const cJSON* auth_stagger_ms = cJSON_GetObjectItem(cfg_json, "auth_stagger_ms");
+    if (auth_stagger_ms)
     {
-        LOG_WARN("smart_dial 已开启但 demand_dial 没开, 智能多播不会生效 (两者都要开)");
+        if (cJSON_IsNumber(auth_stagger_ms) && auth_stagger_ms->valueint >= 0 && auth_stagger_ms->valueint <= 600000)
+        {
+            g_auth_stagger_ms = (uint32_t)auth_stagger_ms->valueint;
+        }
+        else
+        {
+            LOG_WARN("auth_stagger_ms 参数不正确 (应为 0 - 600000, 0 表示不错峰), 使用默认参数 (%d 毫秒)", DEFAULT_AUTH_STAGGER_MS);
+        }
     }
 
     const cJSON* accounts = cJSON_GetObjectItem(cfg_json, "accounts");

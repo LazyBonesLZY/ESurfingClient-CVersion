@@ -97,7 +97,7 @@ try:
     def send(port, data):
         sender.stdin.write(str(port) + ' ' + data + '\n')
         sender.stdin.flush()
-        time.sleep(.2)
+        time.sleep(.4)
 
     send(34567, 'old-before-pin')
     send(34568, 'noreply-old-before-pin')
